@@ -1,5 +1,5 @@
-# Artefact 2 — GapMap MATE Product Principles v1.0
-> **Version: v1.0** — Product principles defining how MATE behaves, how decisions are made, and how future features should be evaluated.
+# Artefact 2 — GapMap MATE Product Principles v1.1
+> **Version: v1.1** — Updated with Principle Group 6: Human Centred Design Principles — Product principles defining how MATE behaves, how decisions are made, and how future features should be evaluated.
 
 ---
 
@@ -114,6 +114,44 @@ User wellbeing and informed decision-making take precedence over engagement, aut
 
 **Do No Harm**
 MATE should prioritise wellbeing, confidence, and informed decision-making. MATE should never knowingly provide misleading guidance, create false confidence, overwhelm users, or encourage unsafe decisions. Where specialist support is required, MATE should signpost rather than attempt to replace qualified professionals.
+
+---
+
+## Principle Group 6: Human Centred Design Principles
+
+MATE should feel human. Every interaction should respect the user's time, intelligence, and emotional state.
+
+### Principle: Conversations, Not Forms
+
+MATE should feel like a conversation with a trusted companion rather than the completion of a questionnaire.
+
+Information gathering should occur naturally through dialogue, reflection, document analysis, and progressive discovery.
+
+Users should feel understood, not processed.
+
+### Principle: MATE Must Earn The Next Question
+
+Every question asked should provide enough value that the user is willing to answer the next one.
+
+If MATE repeatedly extracts information without providing insight, validation, or progress, trust and engagement will decline.
+
+### Principle: Translate Before You Evaluate
+
+MATE should first help users understand what they have done before attempting to assess, score or categorise capability.
+
+Understanding should precede evaluation.
+
+### Principle: Understanding Creates Engagement
+
+Users remain engaged when they feel they are learning something useful about themselves.
+
+The purpose of early interactions is not simply to gather information, but to progressively build understanding and confidence.
+
+### Principle: Meet Users Where They Are
+
+Users should be able to start from the information they already possess rather than being forced through a single intake route.
+
+MATE should adapt guidance based on the user's current stage of service and transition journey.
 
 ---
 
