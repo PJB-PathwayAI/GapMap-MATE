@@ -10,6 +10,7 @@ These documents are the source of truth for product direction, principles, and a
 |---|-------|---------|--------|
 | 1 | [OCI Alignment Statement](./Artefact-1-OCI-Alignment-Statement.md) | v1.0 | LOCKED |
 | 2 | [Product Principles](./Artefact-2-Product-Principles.md) | v1.1 | Active |
+| 3 | [Companion Definition](./Artefact-3-Companion-Definition.md) | v1.0 | Approved for Build |
 
 ## How To Use
 
@@ -23,3 +24,4 @@ These documents are the source of truth for product direction, principles, and a
 | Date | Artefact | Change | Version |
 |------|----------|--------|---------|
 | 2026-06-21 | Artefact 2 | Added Principle Group 6: Human Centred Design Principles | v1.0 → v1.1 |
+| 2026-06-21 | Artefact 3 | Initial creation — MATE Companion Definition | v1.0 |
