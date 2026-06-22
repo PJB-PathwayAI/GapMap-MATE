@@ -11,7 +11,7 @@ These documents are the source of truth for product direction, principles, and a
 | 1 | [OCI Alignment Statement](./Artefact-1-OCI-Alignment-Statement.md) | v1.0 | LOCKED |
 | 2 | [Product Principles](./Artefact-2-Product-Principles.md) | v1.1 | Active |
 | 3 | [Companion Definition](./Artefact-3-Companion-Definition.md) | v1.0 | Approved for Build |
-| 4 | Safety & Welfare Framework | — | Pending |
+| 4 | Safety & Welfare Framework | — | In Authoring — to be confirmed when safety cases are finalised |
 | 5 | [Capability Interpretation Engine](./Artefact-5-Capability-Interpretation-Engine.md) | v1.0 | Approved for Build |
 
 ## How To Use
