@@ -11,13 +11,15 @@ These documents are the source of truth for product direction, principles, and a
 | 1 | [OCI Alignment Statement](./Artefact-1-OCI-Alignment-Statement.md) | v1.0 | LOCKED |
 | 2 | [Product Principles](./Artefact-2-Product-Principles.md) | v1.1 | Active |
 | 3 | [Companion Definition](./Artefact-3-Companion-Definition.md) | v1.0 | Approved for Build |
+| 4 | Safety & Welfare Framework | — | Pending |
+| 5 | [Capability Interpretation Engine](./Artefact-5-Capability-Interpretation-Engine.md) | v1.0 | Approved for Build |
 
 ## How To Use
 
 - Each artefact is a markdown file in this folder
 - Issues referencing artefacts should link back to the file here
 - Changes to LOCKED artefacts require sign-off from Paul and Cipher
-- New artefacts should be added as numbered files (Artefact-3-..., Artefact-4-..., etc.)
+- New artefacts should be added as numbered files (Artefact-N-Title.md)
 
 ## Change Log
 
@@ -25,3 +27,4 @@ These documents are the source of truth for product direction, principles, and a
 |------|----------|--------|---------|
 | 2026-06-21 | Artefact 2 | Added Principle Group 6: Human Centred Design Principles | v1.0 → v1.1 |
 | 2026-06-21 | Artefact 3 | Initial creation — MATE Companion Definition | v1.0 |
+| 2026-06-22 | Artefact 5 | Initial creation — Capability Interpretation Engine | v1.0 |
