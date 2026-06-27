@@ -13,6 +13,7 @@ These documents are the source of truth for product direction, principles, and a
 | 3 | [Companion Definition](./Artefact-3-Companion-Definition.md) | v1.0 | Approved for Build |
 | 4 | Safety & Welfare Framework | — | In Authoring — to be confirmed when safety cases are finalised |
 | 5 | [Capability Interpretation Engine](./Artefact-5-Capability-Interpretation-Engine.md) | v1.0 | Approved for Build |
+| 6 | [Decision Support Framework](./Artefact-6-Decision-Support-Framework.md) | v1.0 | Approved for Build |
 
 ## How To Use
 
@@ -28,3 +29,4 @@ These documents are the source of truth for product direction, principles, and a
 | 2026-06-21 | Artefact 2 | Added Principle Group 6: Human Centred Design Principles | v1.0 → v1.1 |
 | 2026-06-21 | Artefact 3 | Initial creation — MATE Companion Definition | v1.0 |
 | 2026-06-22 | Artefact 5 | Initial creation — Capability Interpretation Engine | v1.0 |
+| 2026-06-27 | Artefact 6 | Initial creation — Decision Support Framework | v1.0 |
