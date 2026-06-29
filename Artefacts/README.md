@@ -11,15 +11,19 @@ These documents are the source of truth for product direction, principles, and a
 | 1 | [OCI Alignment Statement](./Artefact-1-OCI-Alignment-Statement.md) | v1.0 | LOCKED |
 | 2 | [Product Principles](./Artefact-2-Product-Principles.md) | v1.1 | Active |
 | 3 | [Companion Definition](./Artefact-3-Companion-Definition.md) | v1.0 | Approved for Build |
-| 4 | Safety & Welfare Framework | — | In Authoring — to be confirmed when safety cases are finalised |
+| 4 | Safety & Welfare Framework | — | In Authoring |
 | 5 | [Capability Interpretation Engine](./Artefact-5-Capability-Interpretation-Engine.md) | v1.0 | Approved for Build |
 | 6 | [Decision Support Framework](./Artefact-6-Decision-Support-Framework.md) | v1.0 | Approved for Build |
 | 7 | [Transition Lifecycle Framework](./Artefact-7-Transition-Lifecycle-Framework.md) | v1.0 | Approved for Build |
+| 8 | [Transition Operating System (TOS)](./Artefact-8-Transition-Operating-System.md) | v1.0 | Approved for Build |
 
 ## Artefact Structure
 
-Artefacts 1–6 establish the **philosophy and behavioural doctrine** of GapMap MATE.
-Artefacts 7–10 define the **operating model and implementation architecture** before build fully begins.
+**Philosophy & Behavioural Doctrine (Artefacts 1–6):** Define what MATE is, how it thinks, and how it earns trust.
+
+**Operating Model & Implementation Architecture (Artefacts 7–10):** Define how MATE operates, coordinates, and delivers the mission.
+
+> 8 of 10 artefacts complete. 2 remaining.
 
 ## How To Use
 
@@ -37,3 +41,4 @@ Artefacts 7–10 define the **operating model and implementation architecture** 
 | 2026-06-22 | Artefact 5 | Initial creation — Capability Interpretation Engine | v1.0 |
 | 2026-06-27 | Artefact 6 | Initial creation — Decision Support Framework | v1.0 |
 | 2026-06-27 | Artefact 7 | Initial creation — Transition Lifecycle Framework | v1.0 |
+| 2026-06-29 | Artefact 8 | Initial creation — Transition Operating System (TOS) | v1.0 |
