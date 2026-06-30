@@ -4,18 +4,18 @@ This folder contains the defining product artefacts for GapMap MATE, produced by
 
 These documents are the source of truth for product direction, principles, and alignment.
 
-## 🎯 Foundational Doctrine Phase: COMPLETE (9/10)
+## 🎯 Foundational Doctrine Phase: COMPLETE (10/10)
 
-> Artefacts 1–3 and 5–10 are approved for build. Artefact 4 (Safety & Welfare Framework) is in authoring.
+> All 10 artefacts are approved for build. The doctrine is complete. The build begins.
 
-## Current Artefacts
+## Artefacts
 
 | # | Title | Version | Status |
 |---|-------|---------|--------|
 | 1 | [OCI Alignment Statement](./Artefact-1-OCI-Alignment-Statement.md) | v1.0 | LOCKED |
 | 2 | [Product Principles](./Artefact-2-Product-Principles.md) | v1.1 | Active |
 | 3 | [Companion Definition](./Artefact-3-Companion-Definition.md) | v1.0 | Approved for Build |
-| 4 | Safety & Welfare Framework | — | In Authoring |
+| 4 | [Operational Safety & Governance Framework](./Artefact-4-Operational-Safety-Governance-Framework.md) | v1.0 | Approved for Build — **The Guardian** |
 | 5 | [Capability Interpretation Engine](./Artefact-5-Capability-Interpretation-Engine.md) | v1.0 | Approved for Build |
 | 6 | [Decision Support Framework](./Artefact-6-Decision-Support-Framework.md) | v1.0 | Approved for Build |
 | 7 | [Transition Lifecycle Framework](./Artefact-7-Transition-Lifecycle-Framework.md) | v1.0 | Approved for Build |
@@ -29,12 +29,9 @@ These documents are the source of truth for product direction, principles, and a
 
 **Operating Model & Implementation Architecture (Artefacts 7–10):** Define how MATE operates, coordinates, and delivers the mission.
 
-## How To Use
+## Closing Statement
 
-- Each artefact is a markdown file in this folder
-- Issues referencing artefacts should link back to the file here
-- Changes to LOCKED artefacts require sign-off from Paul and Cipher
-- New artefacts should be added as numbered files (Artefact-N-Title.md)
+> Protect the person. Protect the purpose. Protect the trust. Everything else can evolve.
 
 ## Change Log
 
@@ -48,3 +45,4 @@ These documents are the source of truth for product direction, principles, and a
 | 2026-06-29 | Artefact 8 | Initial creation — Transition Operating System (TOS) | v1.0 |
 | 2026-06-30 | Artefact 9 | Initial creation — Human Partnership Framework | v1.0 |
 | 2026-06-30 | Artefact 10 | Initial creation — Engineering Charter | v1.0 |
+| 2026-06-30 | Artefact 4 | Initial creation — Operational Safety & Governance Framework | v1.0 |
