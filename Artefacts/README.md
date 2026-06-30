@@ -16,6 +16,8 @@ These documents are the source of truth for product direction, principles, and a
 | 6 | [Decision Support Framework](./Artefact-6-Decision-Support-Framework.md) | v1.0 | Approved for Build |
 | 7 | [Transition Lifecycle Framework](./Artefact-7-Transition-Lifecycle-Framework.md) | v1.0 | Approved for Build |
 | 8 | [Transition Operating System (TOS)](./Artefact-8-Transition-Operating-System.md) | v1.0 | Approved for Build |
+| 9 | [Human Partnership Framework](./Artefact-9-Human-Partnership-Framework.md) | v1.0 | Approved for Build |
+| 10 | Ethical Use & Boundaries Framework | — | In Authoring |
 
 ## Artefact Structure
 
@@ -23,7 +25,7 @@ These documents are the source of truth for product direction, principles, and a
 
 **Operating Model & Implementation Architecture (Artefacts 7–10):** Define how MATE operates, coordinates, and delivers the mission.
 
-> 8 of 10 artefacts complete. 2 remaining.
+> 9 of 10 artefacts complete. 1 remaining (Artefact 10), then circling back to Artefact 4.
 
 ## How To Use
 
@@ -42,3 +44,4 @@ These documents are the source of truth for product direction, principles, and a
 | 2026-06-27 | Artefact 6 | Initial creation — Decision Support Framework | v1.0 |
 | 2026-06-27 | Artefact 7 | Initial creation — Transition Lifecycle Framework | v1.0 |
 | 2026-06-29 | Artefact 8 | Initial creation — Transition Operating System (TOS) | v1.0 |
+| 2026-06-30 | Artefact 9 | Initial creation — Human Partnership Framework | v1.0 |
