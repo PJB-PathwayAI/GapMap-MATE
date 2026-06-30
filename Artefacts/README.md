@@ -4,6 +4,10 @@ This folder contains the defining product artefacts for GapMap MATE, produced by
 
 These documents are the source of truth for product direction, principles, and alignment.
 
+## 🎯 Foundational Doctrine Phase: COMPLETE (9/10)
+
+> Artefacts 1–3 and 5–10 are approved for build. Artefact 4 (Safety & Welfare Framework) is in authoring.
+
 ## Current Artefacts
 
 | # | Title | Version | Status |
@@ -17,15 +21,13 @@ These documents are the source of truth for product direction, principles, and a
 | 7 | [Transition Lifecycle Framework](./Artefact-7-Transition-Lifecycle-Framework.md) | v1.0 | Approved for Build |
 | 8 | [Transition Operating System (TOS)](./Artefact-8-Transition-Operating-System.md) | v1.0 | Approved for Build |
 | 9 | [Human Partnership Framework](./Artefact-9-Human-Partnership-Framework.md) | v1.0 | Approved for Build |
-| 10 | Ethical Use & Boundaries Framework | — | In Authoring |
+| 10 | [Engineering Charter](./Artefact-10-Engineering-Charter.md) | v1.0 | Approved for Build |
 
 ## Artefact Structure
 
 **Philosophy & Behavioural Doctrine (Artefacts 1–6):** Define what MATE is, how it thinks, and how it earns trust.
 
 **Operating Model & Implementation Architecture (Artefacts 7–10):** Define how MATE operates, coordinates, and delivers the mission.
-
-> 9 of 10 artefacts complete. 1 remaining (Artefact 10), then circling back to Artefact 4.
 
 ## How To Use
 
@@ -45,3 +47,4 @@ These documents are the source of truth for product direction, principles, and a
 | 2026-06-27 | Artefact 7 | Initial creation — Transition Lifecycle Framework | v1.0 |
 | 2026-06-29 | Artefact 8 | Initial creation — Transition Operating System (TOS) | v1.0 |
 | 2026-06-30 | Artefact 9 | Initial creation — Human Partnership Framework | v1.0 |
+| 2026-06-30 | Artefact 10 | Initial creation — Engineering Charter | v1.0 |
