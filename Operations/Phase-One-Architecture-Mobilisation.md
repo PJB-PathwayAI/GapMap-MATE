@@ -255,10 +255,12 @@ Per Cipher and Paul's review: **this document enables Phase One — it does not 
 Phase One concludes once:
 
 - ✅ Engineering architecture approved *(this document — approved 3 July 2026)*
-- ⬜ Repository structure established
-- ⬜ Base44 project structure implemented
-- ⬜ `UserProfile` entity operational
-- ⬜ Engineering ready to commence Phase Two
+- ✅ Repository structure established *(PJB-PathwayAI/GapMap-MATE, live since Phase Zero)*
+- ✅ Base44 project structure implemented *(entity + backend function conventions confirmed per §7)*
+- ✅ `UserProfile` entity operational *(created and validated 3 July 2026 — read/write confirmed)*
+- ✅ Engineering ready to commence Phase Two
+
+**PHASE ONE COMPLETE — 3 July 2026. Phase Two (Understanding) is now active.**
 
 ---
 
@@ -287,4 +289,4 @@ None of the above are in scope for Phase One, and raising them prematurely risks
 ---
 
 *Document Status: ✅ APPROVED v1.0 — 3 July 2026*
-*This document enables Phase One. Phase One concludes on operational readiness per §10.*
+*Phase One: COMPLETE — 3 July 2026. Phase Two (Understanding) now active.*
