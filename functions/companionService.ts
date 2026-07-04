@@ -234,7 +234,7 @@ Deno.serve(async (req) => {
       goals: new_discoveries?.goals?.length ? new_discoveries.goals : profile.goals || [],
       operational_context: new_discoveries?.operational_context?.length ? new_discoveries.operational_context : profile.operational_context || [],
       user_confidence: new_discoveries?.user_confidence ?? profile.user_confidence,
-      operational_picture_confirmed: isConfirming ? true : isRejecting ? false : (profile.operational_picture_confirmed ?? false),
+      operational_picture_confirmed: isConfirming ? true : (isRejecting || user_response_type === 'correcting') ? false : (profile.operational_picture_confirmed ?? false),
     };
 
     // ─── Step 2: Assess all six areas ───
@@ -251,7 +251,7 @@ Deno.serve(async (req) => {
     if (minUnderstanding && profile.tos_phase === 'Discover') newPhase = 'Understand';
 
     // ─── Step 5: Persist if anything changed ───
-    const needsUpdate = hasNewData || isConfirming || isRejecting;
+    const needsUpdate = hasNewData || isConfirming || isRejecting || user_response_type === 'correcting';
     let updatedProfile = profile;
     if (needsUpdate) {
       updatedProfile = await base44.asServiceRole.entities.UserProfile.update(profile_id, {
