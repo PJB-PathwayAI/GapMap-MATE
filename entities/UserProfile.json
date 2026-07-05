@@ -1,0 +1,263 @@
+{
+  "description": "Single source of truth for a GapMap MATE user. Every specialist engine reads and writes here. Stable/Evolving fields per Phase One Architecture v1.0 and Phase Two Design Intent v1.0. Schema v1.1 — locked for MVP following review by Paul & Cipher (5 July 2026).",
+  "name": "UserProfile",
+  "properties": {
+    "action_plan": {
+      "description": "Evolving memory: concrete next steps (Phase 4 Decision Support Engine writes here)",
+      "items": {
+        "properties": {
+          "due_date": { "type": "string" },
+          "status": { "enum": ["pending", "in_progress", "done"], "type": "string" },
+          "step": { "type": "string" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "assessment_confidence": {
+      "description": "Evolving memory: Smudge's evidence quality assessment across the six Operational Picture areas. Measures evidence sufficiency, NOT user honesty. Calculated by Understanding Engine.",
+      "properties": {
+        "areas": {
+          "items": {
+            "properties": {
+              "area": { "type": "string" },
+              "notes": { "type": "string" },
+              "score": { "type": "number" }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "overall_score": { "type": "number" },
+        "rating": { "enum": ["LOW", "MODERATE", "HIGH"], "type": "string" }
+      },
+      "type": "object"
+    },
+    "capability_map": {
+      "description": "Evolving memory: skill -> civilian translation with evidence (Phase 3 Capability Intelligence Engine writes here)",
+      "items": {
+        "properties": {
+          "civilian_equivalent": { "type": "string" },
+          "evidence": { "type": "string" },
+          "evidence_ref": {
+            "description": "Reference to an entry in evidence_log for full provenance traceability",
+            "type": "string"
+          },
+          "score": { "type": "number" },
+          "skill": { "type": "string" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "communication_preferences": {
+      "description": "Future placeholder: preferred interaction style. No behaviour implemented yet — reserved for future Smudge adaptation based on individual communication patterns observed during discovery.",
+      "properties": {
+        "pacing": {
+          "description": "Future: how quickly Smudge progresses through topics — 'gentle', 'standard', 'direct'",
+          "type": "string"
+        },
+        "preferred_style": {
+          "description": "Future: general communication style preference (free text, to be refined)",
+          "type": "string"
+        },
+        "verbosity": {
+          "description": "Future: response detail level — 'brief', 'standard', 'detailed'",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "confidence_scores": {
+      "description": "Evolving memory: per-capability confidence rating with evidence references (Phase 3)",
+      "items": {
+        "properties": {
+          "confidence": { "type": "number" },
+          "evidence_ref": {
+            "description": "Reference to an entry in evidence_log for full provenance traceability",
+            "type": "string"
+          },
+          "evidence_refs": { "type": "string" },
+          "skill": { "type": "string" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "contact_email": {
+      "description": "Stable memory: contact email",
+      "type": "string"
+    },
+    "evidence_log": {
+      "description": "Evolving memory: Evidence Provenance Store. Every key observation, capability claim, or assessment is logged here with its source, enabling full traceability. Other fields (capability_map.evidence_ref, confidence_scores.evidence_ref) point back to entries here.",
+      "items": {
+        "properties": {
+          "content": {
+            "description": "The actual observation or evidence captured",
+            "type": "string"
+          },
+          "evidence_id": {
+            "description": "Unique identifier for this evidence entry (e.g. 'EV-001')",
+            "type": "string"
+          },
+          "recorded_date": {
+            "description": "When this evidence was captured",
+            "type": "string"
+          },
+          "source_reference": {
+            "description": "Specific reference (e.g. 'discovery conversation 2026-07-05', 'SJAR 2024', 'Pte Bateson CV')",
+            "type": "string"
+          },
+          "source_type": {
+            "description": "Where the evidence originated",
+            "enum": ["conversation", "service_history", "qualification", "cv", "assessment", "user_statement", "third_party"],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "full_name": {
+      "description": "Stable memory: user's full name",
+      "type": "string"
+    },
+    "goals": {
+      "description": "Evolving memory: what the individual has told MATE they want — ambition, purpose, not just 'what job'",
+      "items": { "type": "string" },
+      "type": "array"
+    },
+    "milestones": {
+      "description": "Evolving memory: transition milestones (Phase 5 Transition Partnership Engine writes here)",
+      "items": {
+        "properties": {
+          "achieved_date": { "type": "string" },
+          "milestone": { "type": "string" },
+          "phase": { "type": "string" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "operational_context": {
+      "description": "Evolving memory: 'What influences your journey?' — constraints, time, funding, support network, learning, confidence factors",
+      "items": {
+        "properties": {
+          "description": { "type": "string" },
+          "factor": { "type": "string" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "operational_picture_confirmed": {
+      "description": "Evolving memory: has the user explicitly confirmed 'Yes, that's me' — agreeing the Operational Picture accurately reflects their situation. Tied to the current operational_picture_version. Required gate before Phase Three.",
+      "type": "boolean"
+    },
+    "operational_picture_history": {
+      "description": "Evolving memory: Operational Picture version history. Each confirmation or correction creates a new version entry, providing a lightweight audit trail of how the user's picture has evolved.",
+      "items": {
+        "properties": {
+          "confirmed": { "type": "boolean" },
+          "confirmed_date": {
+            "description": "When the user confirmed this version (null if not yet confirmed)",
+            "type": "string"
+          },
+          "correction_note": {
+            "description": "If this version was created by a correction, what changed",
+            "type": "string"
+          },
+          "summary": {
+            "description": "Brief description of the Operational Picture at this version",
+            "type": "string"
+          },
+          "version": {
+            "description": "Version number (starts at 1)",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "operational_picture_version": {
+      "description": "Evolving memory: current version of the Operational Picture. Increments on correction. Each version requires its own confirmation. Version 0 = no picture yet formed.",
+      "type": "number"
+    },
+    "personal_context": {
+      "description": "Evolving memory: 'Where are you now?' — current circumstances, only what's volunteered",
+      "type": "string"
+    },
+    "professional_identity": {
+      "description": "Stable memory: 'Who are you?' — how the individual understands themselves, beyond rank/branch. Narrative, not categories.",
+      "type": "string"
+    },
+    "rank": {
+      "description": "Stable memory: rank held",
+      "type": "string"
+    },
+    "recommended_pathways": {
+      "description": "Evolving memory: pathway matches (Phase 4 Decision Support Engine writes here)",
+      "items": {
+        "properties": {
+          "evidence": { "type": "string" },
+          "match_percent": { "type": "number" },
+          "pathway": { "type": "string" },
+          "status": { "type": "string" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "safety_flags": {
+      "description": "Operational tracking: Principle VII escalation markers, internal only, never surfaced directly to user",
+      "items": {
+        "properties": {
+          "date": { "type": "string" },
+          "flag_type": { "type": "string" },
+          "notes": { "type": "string" },
+          "resolved": { "default": false, "type": "boolean" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "service_branch": {
+      "description": "Stable memory: Army, Royal Navy, RAF, Royal Marines, etc.",
+      "type": "string"
+    },
+    "service_history": {
+      "description": "Stable memory: 'What have you done?' — roles, responsibilities, deployments, achievements, leadership, decision-making evidence",
+      "items": {
+        "properties": {
+          "achievements": { "type": "string" },
+          "decision_making": { "type": "string" },
+          "deployment": { "type": "string" },
+          "end_date": { "type": "string" },
+          "leadership_scope": { "type": "string" },
+          "responsibilities": { "type": "string" },
+          "role": { "type": "string" },
+          "start_date": { "type": "string" }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "tos_phase": {
+      "default": "Discover",
+      "description": "Operational tracking: current position in the 7-phase TOS lifecycle",
+      "enum": ["Discover", "Understand", "Evaluate", "Recommend", "Enable", "Reflect", "Adapt"],
+      "type": "string"
+    },
+    "user_confidence": {
+      "description": "Evolving memory: 'How well do we understand?' — the individual's own confidence in their transition (0-10 scale)",
+      "type": "number"
+    },
+    "years_served": {
+      "description": "Stable memory: total years of service",
+      "type": "number"
+    }
+  },
+  "required": [],
+  "type": "object"
+}
