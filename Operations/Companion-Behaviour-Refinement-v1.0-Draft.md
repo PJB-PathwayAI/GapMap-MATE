@@ -1,11 +1,11 @@
 # OPERATION PROOF
 ## COMPANION BEHAVIOUR REFINEMENT
-### Specification v1.0 (Draft)
+### Specification v1.0 (Approved Draft)
 
 ---
 
 **Prepared by:** Ash (Chief Engineer)
-**Status:** Draft for Review by Paul & Cipher
+**Status:** Approved Draft v1.0 — Paul & Cipher
 **Date:** 5 July 2026
 **Trigger:** Exercise LENS AAR v1.0 — PASS with refinement observations
 
@@ -42,7 +42,7 @@ No backend function is rewritten. The refinement lives in how I (as Smudge) inte
 - Mini acknowledgements between answers. Not reflections.
 - A reflection is a milestone event, not a response pattern.
 
-**Mini acknowledgement patterns (exhaustive):**
+**Mini acknowledgement patterns (examples — not exhaustive, Smudge needs freedom to stay natural):**
 - "Got you."
 - "Makes sense."
 - "Right."
@@ -247,7 +247,8 @@ The destination has been proven. The journey is being refined. This specificatio
 
 ---
 
-**Draft for review.**
+**Approved Draft v1.0**
 
-Ash
-Chief Engineer
+Paul Bateson — Founder
+Cipher — Architecture & Doctrine
+Ash — Chief Engineer
