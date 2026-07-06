@@ -1,11 +1,13 @@
 # OPERATION PROOF
 ## COMPANION BEHAVIOUR REFINEMENT
-### Specification v1.0 (Approved Draft)
+### Specification v1.0 — **APPROVED**
 
 ---
 
 **Prepared by:** Ash (Chief Engineer)
-**Status:** Approved Draft v1.0 — Paul & Cipher
+**Status:** ✅ **APPROVED v1.0** — Paul & Cipher, 5 July 2026 (one wording tweak applied: mini acknowledgement phrases are examples, not an exhaustive list)
+**Validated by:** Exercise LENS 2 (6 July 2026) — all six refinements confirmed in live conversation. See [Test-Results/Exercise-LENS-2-AAR-v1.0.md](../Test-Results/Exercise-LENS-2-AAR-v1.0.md)
+**Superseded status:** None. This is the current, locked behavioural specification for Companion Discovery Behaviour, formally closed as operationally mature for MVP (Phase Three closure, 6 July 2026, GitHub issue #17).
 **Date:** 5 July 2026
 **Trigger:** Exercise LENS AAR v1.0 — PASS with refinement observations
 
