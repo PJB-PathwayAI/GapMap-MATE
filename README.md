@@ -2,7 +2,7 @@
 
 **Mission:** Provide military personnel with a trusted companion that helps them understand their operational picture — capabilities, options, and next steps — throughout their transition journey.
 
-**Operational Phase:** Operation PROOF — Phases One, Two & Three COMPLETE. Consolidation Period in progress ahead of Phase Four (Decision Support).
+**Operational Phase:** Operation PROOF — Phases One, Two & Three COMPLETE. Phase Four **Decision Readiness** design doctrine received (v0.1 draft, 10 July 2026).
 
 ---
 
@@ -32,8 +32,8 @@ All 10 foundational artefacts approved, locked, and committed:
 | 1 | Mobilisation | ✅ COMPLETE — Architecture v1.0 approved, UserProfile entity built |
 | 2 | Understanding | ✅ COMPLETE — Understanding Engine v2.0 + Companion Service v1.2 deployed & behaviourally validated (Exercise MIRROR) |
 | 3 | Evaluate (Capability Intelligence) | ✅ COMPLETE — Capability Intelligence Engine deployed & validated (Exercise LENS, Exercise LENS 2). Closed 6 July 2026. |
-| — | **Consolidation Period** | 🔄 **IN PROGRESS** — see [Operations/Consolidation-Report-v1.0.md](./Operations/Consolidation-Report-v1.0.md) |
-| 4 | Recommend (Decision Support) | ⏳ Awaiting Design Intent from Paul & Cipher |
+| — | Consolidation Period | ✅ COMPLETE — see [Operations/Consolidation-Report-v1.0.md](./Operations/Consolidation-Report-v1.0.md) |
+| 4 | **Decision Readiness** *(renamed from Decision Support)* | 📋 Doctrine Draft v0.1 received — see [Doctrine/Decision-Readiness-Philosophy-v0.1.md](./Doctrine/Decision-Readiness-Philosophy-v0.1.md) |
 | 5 | Enable (Transition Partnership) | Planned |
 | 6 | Validate (Operational Validation) | Planned |
 
@@ -75,6 +75,19 @@ See [Test-Results/README.md](./Test-Results/README.md) for the full chronologica
 Full architecture document: [`Operations/Phase-One-Architecture-Mobilisation.md`](./Operations/Phase-One-Architecture-Mobilisation.md)
 
 See also [`Operations/README.md`](./Operations/README.md) for the full index of operational planning documents, and [`Operations/Consolidation-Report-v1.0.md`](./Operations/Consolidation-Report-v1.0.md) for the current architecture-as-built, engineering debt review, and Decision Support extension points.
+
+
+---
+
+## Doctrine (Emerged from Operation PROOF)
+
+Distinct from the 10 foundational Artefacts (written before engineering began), the **Doctrine/** folder contains behavioural philosophy that the engineering process itself produced.
+
+| Document | Version | Status |
+|---|---|---|
+| [Decision Readiness Philosophy](./Doctrine/Decision-Readiness-Philosophy-v0.1.md) | v0.1 | Draft for review |
+
+See [`Doctrine/README.md`](./Doctrine/README.md) for the distinction between Artefacts and Doctrine.
 
 ---
 
