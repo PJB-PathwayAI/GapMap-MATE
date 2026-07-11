@@ -11,14 +11,15 @@ Doctrine here is earned, not assumed. It exists because the engineering process 
 | Document | Version | Status | Summary |
 |---|---|---|---|
 | [Decision-Readiness-Philosophy-v0.1.md](./Decision-Readiness-Philosophy-v0.1.md) | v0.1 | Draft for review | Phase Four is renamed Decision Readiness. MATE informs and supports reflection — the individual decides. Introduces the Soak Period as an intentional part of the transition journey. |
+| [Canonical-User-Questions-v1.0.md](./Canonical-User-Questions-v1.0.md) | v1.0 | 🔒 LOCKED FOR MVP | The ten questions GapMap MATE is designed to answer during the MVP. The architectural boundary for Decision Readiness. Every significant feature must map to at least one. |
 
 ---
 
 ## How this folder differs from Artefacts/
 
-**Artefacts/** — the 10 foundational documents written *before* engineering began. The doctrine that guided the build. Locked.
+**Artefacts/** — the 10 foundational documents written *before* engineering began. The doctrine that guided the build. All locked.
 
-**Doctrine/** — principles that emerged *during* the build. Written because Operation PROOF produced evidence that shaped or extended the original doctrine. These documents may be in draft, under review, or locked — see individual file status.
+**Doctrine/** — principles that emerged *during* the build. Written because Operation PROOF produced evidence that shaped or extended the original doctrine. Documents here may be in draft, under review, or locked — see individual file status.
 
 ---
 
