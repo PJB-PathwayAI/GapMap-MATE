@@ -10,6 +10,7 @@ This folder contains the operational planning and engineering design documents f
 | 3 Jul 2026 | [Phase-One-Architecture-Mobilisation.md](./Phase-One-Architecture-Mobilisation.md) | Architecture v1.0 — engineering delivery model, OCI Companion Service design, API strategy. | ✅ COMPLETE |
 | 4 Jul 2026 | [Phase-Two-Understanding-Design-Intent.md](./Phase-Two-Understanding-Design-Intent.md) | Design Intent for the Understanding Engine — the six operational areas, dual confidence model. | ✅ COMPLETE |
 | 5 Jul 2026 | [Phase-Three-Capability-Intelligence-Design-Intent.md](./Phase-Three-Capability-Intelligence-Design-Intent.md) | Design Intent for the Capability Intelligence Engine — the Evidence Rule, capability confidence scoring. | ✅ COMPLETE |
+| 12 Jul 2026 | [Phase-Four-Decision-Readiness-Design-Intent.md](./Phase-Four-Decision-Readiness-Design-Intent.md) | Design Intent for the Decision Readiness Engine — Q4–9, the Soak Period, decision factors, first step. | 📋 Draft — engineering build not commenced |
 | 5 Jul 2026 | [Companion-Behaviour-Refinement-v1.0-Draft.md](./Companion-Behaviour-Refinement-v1.0-Draft.md) | The six behavioural refinements governing how Smudge converses (pacing, checkpoints, momentum, voice, authenticity, natural discovery). | ✅ **APPROVED** — validated by Exercise LENS 2 |
 
 *(Filename retains "-Draft" suffix for link stability — the document itself is marked APPROVED in its header. See repository clean-up note below.)*
