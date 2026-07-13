@@ -18,7 +18,12 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
  *   - Pathway matches are only (re)generated on explicit evaluate_pathways action.
  *   - Soak Period state machine: NOT_STARTED → SOAKING → COMPLETED | BYPASSED.
  *     BYPASSED is auditable and explicit — bypass_reason is required.
- *   - tos_phase progression: EVALUATING → SOAKING → READY_TO_ACT (all uppercase).
+ *   - tos_phase is the single source of truth for lifecycle phase.
+ *     soak_period.state is the single source of truth for the Soak Period.
+ *     These are non-overlapping. tos_phase does NOT include SOAKING.
+ *     tos_phase progression: EVALUATING → READY_TO_ACT (all uppercase).
+ *     During soaking: tos_phase = EVALUATING, soak_period.state = SOAKING.
+ *     On completion or bypass: tos_phase = READY_TO_ACT, soak_period.state = COMPLETED | BYPASSED.
  */
 
 Deno.serve(async (req) => {
@@ -46,7 +51,6 @@ Deno.serve(async (req) => {
   try {
     profile = await base44.asServiceRole.entities.UserProfile.get(profile_id.trim());
   } catch (err: any) {
-    // SDK throws on invalid ObjectId format or network failure — surface cleanly
     return Response.json({
       error: 'Profile lookup failed',
       detail: err?.message || 'Unknown error during profile fetch. Check profile_id format.'
@@ -58,10 +62,12 @@ Deno.serve(async (req) => {
   }
 
   // ─── Precondition gate: Phase Three must be complete ─────────────────────
-  const validEntryPhases = ['EVALUATING', 'SOAKING', 'READY_TO_ACT'];
+  // tos_phase valid entry states for Phase Four: EVALUATING or READY_TO_ACT.
+  // SOAKING is not a tos_phase value — it lives in soak_period.state only.
+  const validEntryPhases = ['EVALUATING', 'READY_TO_ACT'];
   if (!validEntryPhases.includes(profile.tos_phase)) {
     return Response.json({
-      error: `Precondition failed: Decision Readiness Engine requires tos_phase EVALUATING or later. Current phase: ${profile.tos_phase}`,
+      error: `Precondition failed: Decision Readiness Engine requires tos_phase EVALUATING or READY_TO_ACT. Current phase: ${profile.tos_phase}`,
       current_phase: profile.tos_phase
     }, { status: 400 });
   }
@@ -79,6 +85,29 @@ Deno.serve(async (req) => {
       ? profile.evidence_log.map((e: any) => String(e.id))
       : []
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ACTION: get_status
+  // Returns current Decision Readiness state. No writes.
+  // ─────────────────────────────────────────────────────────────────────────
+  if (action === 'get_status') {
+    const expressedFactors = Object.entries(profile.decision_factors || {})
+      .filter(([, v]: [string, any]) => v?.expressed === true)
+      .map(([k]) => k);
+
+    const soakState = profile.soak_period?.state || 'NOT_STARTED';
+
+    return Response.json({
+      success: true,
+      action: 'get_status',
+      tos_phase: profile.tos_phase,
+      soak_period: profile.soak_period || { state: 'NOT_STARTED' },
+      soak_state: soakState,
+      pathway_count: Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways.length : 0,
+      expressed_decision_factors: expressedFactors,
+      capability_count: Array.isArray(profile.capability_map) ? profile.capability_map.length : 0
+    });
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: record_decision_factor
@@ -294,7 +323,8 @@ Deno.serve(async (req) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: initiate_soak
-  // Transitions Soak Period: NOT_STARTED → SOAKING.
+  // Transitions soak_period.state: NOT_STARTED → SOAKING.
+  // tos_phase remains EVALUATING — soak_period is the sole authority on soak state.
   // Does NOT regenerate pathway matches.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'initiate_soak') {
@@ -308,6 +338,8 @@ Deno.serve(async (req) => {
       }, { status: 400 });
     }
 
+    // tos_phase intentionally NOT updated here — remains EVALUATING.
+    // soak_period.state is the single source of truth for soak status.
     await base44.asServiceRole.entities.UserProfile.update(profile_id, {
       soak_period: {
         state: 'SOAKING',
@@ -316,22 +348,22 @@ Deno.serve(async (req) => {
         bypassed_date: null,
         bypass_reason: null,
         reflection_notes: ''
-      },
-      tos_phase: 'SOAKING'
+      }
     });
 
     return Response.json({
       success: true,
       action: 'initiate_soak',
       soak_state: 'SOAKING',
-      tos_phase: 'SOAKING',
-      message: 'Soak Period initiated. Individual is encouraged to reflect before proceeding.'
+      tos_phase: profile.tos_phase, // unchanged — EVALUATING
+      message: 'Soak Period initiated. soak_period.state = SOAKING. tos_phase remains EVALUATING — soak_period is the authority on soak status.'
     });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: complete_soak
-  // Transitions Soak Period: SOAKING → COMPLETED. Advances tos_phase to READY_TO_ACT.
+  // Transitions soak_period.state: SOAKING → COMPLETED.
+  // Advances tos_phase: EVALUATING → READY_TO_ACT.
   // Does NOT regenerate pathway matches.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'complete_soak') {
@@ -360,14 +392,15 @@ Deno.serve(async (req) => {
       action: 'complete_soak',
       soak_state: 'COMPLETED',
       tos_phase: 'READY_TO_ACT',
-      message: 'Soak Period completed. Individual has reached Decision Readiness — tos_phase advanced to READY_TO_ACT.'
+      message: 'Soak Period completed. soak_period.state = COMPLETED. tos_phase advanced to READY_TO_ACT.'
     });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: bypass_soak
-  // Explicit, auditable bypass. NOT_STARTED or SOAKING → BYPASSED.
-  // bypass_reason is required — the individual owns the decision.
+  // Explicit, auditable bypass. soak_period.state: NOT_STARTED | SOAKING → BYPASSED.
+  // Advances tos_phase: EVALUATING → READY_TO_ACT.
+  // bypass_reason required — the individual owns the decision.
   // Does NOT regenerate pathway matches.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'bypass_soak') {
@@ -403,27 +436,7 @@ Deno.serve(async (req) => {
       soak_state: 'BYPASSED',
       tos_phase: 'READY_TO_ACT',
       bypass_reason: soak_bypass_reason.trim(),
-      message: 'Soak Period bypassed. Individual has chosen to proceed. Bypass is recorded and auditable. tos_phase advanced to READY_TO_ACT.'
-    });
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // ACTION: get_status
-  // Returns current Decision Readiness state. No writes.
-  // ─────────────────────────────────────────────────────────────────────────
-  if (action === 'get_status') {
-    const expressedFactors = Object.entries(profile.decision_factors || {})
-      .filter(([, v]: [string, any]) => v?.expressed === true)
-      .map(([k]) => k);
-
-    return Response.json({
-      success: true,
-      action: 'get_status',
-      tos_phase: profile.tos_phase,
-      soak_period: profile.soak_period || { state: 'NOT_STARTED' },
-      pathway_count: Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways.length : 0,
-      expressed_decision_factors: expressedFactors,
-      capability_count: Array.isArray(profile.capability_map) ? profile.capability_map.length : 0
+      message: 'Soak Period bypassed. soak_period.state = BYPASSED. Bypass is recorded and auditable. tos_phase advanced to READY_TO_ACT.'
     });
   }
 
