@@ -2,7 +2,7 @@
 
 **Mission:** Provide military personnel with a trusted companion that helps them understand their operational picture — capabilities, options, and next steps — throughout their transition journey.
 
-**Operational Phase:** Operation PROOF — Phases One, Two, Three & Four COMPLETE. **Decision Readiness Engine deployed and validated 13 July 2026.**
+**Operational Phase:** Operation PROOF — Phases One, Two & Three COMPLETE. Phase Four **Decision Readiness** — specification complete, engineering build complete, deterministic tests passed. Behavioural validation (Exercise PRISM) pending.
 
 ---
 
@@ -33,7 +33,7 @@ All 10 foundational artefacts approved, locked, and committed:
 | 2 | Understanding | ✅ COMPLETE — Understanding Engine v2.0 + Companion Service v1.2 deployed & behaviourally validated (Exercise MIRROR) |
 | 3 | Evaluate (Capability Intelligence) | ✅ COMPLETE — Capability Intelligence Engine deployed & validated (Exercise LENS, Exercise LENS 2). Closed 6 July 2026. |
 | — | Consolidation Period | ✅ COMPLETE — see [Operations/Consolidation-Report-v1.0.md](./Operations/Consolidation-Report-v1.0.md) |
-| 4 | **Decision Readiness** | ✅ **COMPLETE** — `engineDecisionReadiness.ts` deployed. 6/6 tests passed. 13 Jul 2026 |
+| 4 | **Decision Readiness** | 🔬 **BUILD COMPLETE — VALIDATION PENDING** — Engine deployed. Tests passed. Exercise PRISM required before operational completion. |
 | 5 | Enable (Transition Partnership) | Planned |
 | 6 | Validate (Operational Validation) | Planned |
 
