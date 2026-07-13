@@ -23,20 +23,38 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 Deno.serve(async (req) => {
   const base44 = createClientFromRequest(req);
-  const body = await req.json();
+
+  // ─── Parse request body safely ────────────────────────────────────────────
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: 'Invalid JSON in request body' }, { status: 400 });
+  }
+
   const { profile_id, action, decision_factors_update, soak_bypass_reason, reflection_notes } = body;
 
-  if (!profile_id) {
-    return Response.json({ error: 'profile_id is required' }, { status: 400 });
+  if (!profile_id || typeof profile_id !== 'string' || profile_id.trim().length === 0) {
+    return Response.json({ error: 'profile_id is required and must be a non-empty string' }, { status: 400 });
   }
-  if (!action) {
+  if (!action || typeof action !== 'string') {
     return Response.json({ error: 'action is required' }, { status: 400 });
   }
 
-  // ─── Load profile ────────────────────────────────────────────────────────
-  const profile = await base44.asServiceRole.entities.UserProfile.get(profile_id);
+  // ─── Load profile — wrapped to handle SDK exceptions on malformed IDs ────
+  let profile: any;
+  try {
+    profile = await base44.asServiceRole.entities.UserProfile.get(profile_id.trim());
+  } catch (err: any) {
+    // SDK throws on invalid ObjectId format or network failure — surface cleanly
+    return Response.json({
+      error: 'Profile lookup failed',
+      detail: err?.message || 'Unknown error during profile fetch. Check profile_id format.'
+    }, { status: 400 });
+  }
+
   if (!profile) {
-    return Response.json({ error: 'Profile not found' }, { status: 404 });
+    return Response.json({ error: `Profile not found: ${profile_id}` }, { status: 404 });
   }
 
   // ─── Precondition gate: Phase Three must be complete ─────────────────────
@@ -49,15 +67,17 @@ Deno.serve(async (req) => {
   }
 
   // ─── Precondition gate: Capability Map must be populated ─────────────────
-  if (!profile.capability_map || profile.capability_map.length === 0) {
+  if (!Array.isArray(profile.capability_map) || profile.capability_map.length === 0) {
     return Response.json({
       error: 'Precondition failed: capability_map is empty. Phase Three must be completed before Decision Readiness can proceed.',
     }, { status: 400 });
   }
 
   // ─── Evidence log index (for reference validation) ────────────────────────
-  const evidenceIndex = new Set(
-    (profile.evidence_log || []).map((e: any) => e.id)
+  const evidenceIndex = new Set<string>(
+    Array.isArray(profile.evidence_log)
+      ? profile.evidence_log.map((e: any) => String(e.id))
+      : []
   );
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -66,17 +86,20 @@ Deno.serve(async (req) => {
   // Hard rule: evidence_ref must resolve to a genuine evidence_log entry.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'record_decision_factor') {
-    if (!decision_factors_update) {
-      return Response.json({ error: 'decision_factors_update is required for record_decision_factor' }, { status: 400 });
+    if (!decision_factors_update || typeof decision_factors_update !== 'object') {
+      return Response.json({ error: 'decision_factors_update is required and must be an object' }, { status: 400 });
     }
 
-    // Validate every expressed factor has a resolvable evidence_ref
     const currentFactors = profile.decision_factors || {};
     const violations: string[] = [];
 
     for (const [factorKey, factorValue] of Object.entries(decision_factors_update as Record<string, any>)) {
+      if (!factorValue || typeof factorValue !== 'object') {
+        violations.push(`Factor '${factorKey}': value must be an object.`);
+        continue;
+      }
       if (factorValue.expressed === true) {
-        if (!factorValue.evidence_ref) {
+        if (!factorValue.evidence_ref || typeof factorValue.evidence_ref !== 'string') {
           violations.push(`Factor '${factorKey}': expressed=true but no evidence_ref provided.`);
         } else if (!evidenceIndex.has(factorValue.evidence_ref)) {
           violations.push(`Factor '${factorKey}': evidence_ref '${factorValue.evidence_ref}' does not resolve to any record in this profile's evidence_log.`);
@@ -91,7 +114,7 @@ Deno.serve(async (req) => {
       }, { status: 400 });
     }
 
-    // Merge — use freshly-loaded profile values, not stale caller values
+    // Merge against freshly-loaded profile values — stale caller values cannot overwrite
     const updatedFactors = { ...currentFactors };
     for (const [key, value] of Object.entries(decision_factors_update as Record<string, any>)) {
       updatedFactors[key] = { ...(currentFactors[key] || {}), ...value };
@@ -115,17 +138,27 @@ Deno.serve(async (req) => {
   // Only called explicitly — not triggered by soak actions or factor updates.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'evaluate_pathways') {
-    const allPathways = await base44.asServiceRole.entities.OCIPathway.list();
+    let allPathways: any[] = [];
+    try {
+      allPathways = await base44.asServiceRole.entities.OCIPathway.list();
+    } catch (err: any) {
+      return Response.json({
+        error: 'Failed to load OCI Pathway library',
+        detail: err?.message || 'Unknown error'
+      }, { status: 500 });
+    }
 
-    // Re-read decision factors from the freshly-loaded profile (not from caller)
+    // Decision Factors read from freshly-loaded profile — never from caller
     const currentFactors = profile.decision_factors || {};
     const capabilityMap = profile.capability_map || [];
 
-    // Build a normalised capability set from the profile
+    // Normalise capability set
     const profileCapabilities = capabilityMap.map((cap: any) => ({
       name: (cap.capability || '').toLowerCase().trim(),
       confidence: cap.confidence || 0,
-      evidence_refs: cap.evidence_refs || (cap.evidence_ref ? [cap.evidence_ref] : []),
+      evidence_refs: Array.isArray(cap.evidence_refs)
+        ? cap.evidence_refs
+        : (cap.evidence_ref ? [cap.evidence_ref] : []),
       category: cap.category || ''
     }));
 
@@ -134,7 +167,9 @@ Deno.serve(async (req) => {
     for (const cap of profileCapabilities) {
       for (const ref of cap.evidence_refs) {
         if (ref && !evidenceIndex.has(ref)) {
-          unresolvedCapabilities.push(`Capability '${cap.name}' references evidence '${ref}' which does not exist in evidence_log.`);
+          unresolvedCapabilities.push(
+            `Capability '${cap.name}' references evidence '${ref}' which does not exist in this profile's evidence_log.`
+          );
         }
       }
     }
@@ -146,15 +181,15 @@ Deno.serve(async (req) => {
       }, { status: 400 });
     }
 
-    const matches = [];
+    const matches: any[] = [];
     const now = new Date().toISOString();
 
     for (const pathway of allPathways) {
       if (pathway.review_status === 'retired') continue;
 
-      const pathwayCapabilities = (pathway.capability_profile || []).map((c: string) =>
-        c.toLowerCase().trim()
-      );
+      const pathwayCapabilities = Array.isArray(pathway.capability_profile)
+        ? pathway.capability_profile.map((c: string) => (c || '').toLowerCase().trim())
+        : [];
 
       if (pathwayCapabilities.length === 0) continue;
 
@@ -181,46 +216,43 @@ Deno.serve(async (req) => {
       } else if (alignmentRatio > 0) {
         confidenceLevel = 'WORTH_EXPLORING';
       } else {
-        continue; // No meaningful alignment — do not include
+        continue; // No meaningful alignment — exclude
       }
 
-      // Build capability explanation
+      // Capability explanation
       const capabilityExplanation = alignedCapabilities.length > 0
         ? `Your demonstrated ${alignedCapabilities.slice(0, 3).join(', ')} align${alignedCapabilities.length === 1 ? 's' : ''} with the core requirements of this direction.`
         : 'Partial alignment identified through related capability areas.';
 
-      // Build decision factor alignment note (using freshly-loaded factors)
+      // Decision Factor alignment notes — read from fresh profile
       const factorNotes: string[] = [];
       const lifestyle = pathway.lifestyle_considerations || {};
 
       if (currentFactors.family?.expressed) {
-        if (lifestyle.shift_patterns && lifestyle.shift_patterns.toLowerCase().includes('night')) {
+        if (lifestyle.shift_patterns?.toLowerCase().includes('night')) {
           factorNotes.push(`You've mentioned family is important — note this direction involves night shifts, which may affect that.`);
         } else {
           factorNotes.push(`You've mentioned family is a priority — this direction's hours are generally compatible with family life.`);
         }
       }
 
-      if (currentFactors.location?.expressed && currentFactors.location?.notes) {
-        if (lifestyle.travel && lifestyle.travel.toLowerCase().includes('significant')) {
+      if (currentFactors.location?.expressed) {
+        if (lifestyle.travel?.toLowerCase().includes('significant')) {
           factorNotes.push(`You've mentioned location matters to you — this direction involves significant regional travel.`);
         } else {
           factorNotes.push(`You've mentioned staying local matters — this direction is generally site-based.`);
         }
       }
 
-      if (currentFactors.purpose?.expressed && currentFactors.purpose?.notes) {
+      if (currentFactors.purpose?.expressed) {
         factorNotes.push(`This direction aligns with what you've said about wanting meaningful work.`);
       }
 
       if (currentFactors.lifestyle?.expressed) {
-        if (lifestyle.shift_patterns && (lifestyle.shift_patterns.toLowerCase().includes('rotating') || lifestyle.shift_patterns.toLowerCase().includes('night'))) {
+        if (lifestyle.shift_patterns?.toLowerCase().includes('rotating') || lifestyle.shift_patterns?.toLowerCase().includes('night')) {
           factorNotes.push(`You've mentioned lifestyle matters — rotating shifts in this direction may need consideration.`);
         }
       }
-
-      // Identify gaps
-      const unresolved_gaps = pathway.common_transition_gaps || [];
 
       matches.push({
         pathway_id: pathway.id,
@@ -232,16 +264,16 @@ Deno.serve(async (req) => {
           ? factorNotes.join(' ')
           : 'No specific personal priorities expressed yet that affect this direction.',
         lifestyle_fit_notes: lifestyle.notes || '',
-        unresolved_gaps,
+        unresolved_gaps: Array.isArray(pathway.common_transition_gaps) ? pathway.common_transition_gaps : [],
         generated_at: now
       });
     }
 
-    // Sort: MATCHED_DIRECTION first, then POSSIBLE_DIRECTION, then WORTH_EXPLORING
-    const order: Record<string, number> = { MATCHED_DIRECTION: 0, POSSIBLE_DIRECTION: 1, WORTH_EXPLORING: 2 };
-    matches.sort((a, b) => (order[a.confidence_level] ?? 3) - (order[b.confidence_level] ?? 3));
+    // Sort: MATCHED_DIRECTION first, POSSIBLE_DIRECTION second, WORTH_EXPLORING third
+    const sortOrder: Record<string, number> = { MATCHED_DIRECTION: 0, POSSIBLE_DIRECTION: 1, WORTH_EXPLORING: 2 };
+    matches.sort((a, b) => (sortOrder[a.confidence_level] ?? 3) - (sortOrder[b.confidence_level] ?? 3));
 
-    // Persist matches — only on this explicit evaluate action
+    // Persist — only on this explicit evaluate action
     await base44.asServiceRole.entities.UserProfile.update(profile_id, {
       recommended_pathways: matches
     });
@@ -262,17 +294,16 @@ Deno.serve(async (req) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: initiate_soak
-  // Transitions Soak Period from NOT_STARTED → SOAKING.
+  // Transitions Soak Period: NOT_STARTED → SOAKING.
   // Does NOT regenerate pathway matches.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'initiate_soak') {
     const currentSoak = profile.soak_period || {};
     const currentSoakState = currentSoak.state || 'NOT_STARTED';
 
-    // Valid transition: NOT_STARTED → SOAKING only
     if (currentSoakState !== 'NOT_STARTED') {
       return Response.json({
-        error: `Invalid Soak Period transition: cannot initiate from state '${currentSoakState}'. Only NOT_STARTED → SOAKING is valid.`,
+        error: `Invalid Soak Period transition: cannot initiate from '${currentSoakState}'. Valid: NOT_STARTED → SOAKING.`,
         current_soak_state: currentSoakState
       }, { status: 400 });
     }
@@ -293,13 +324,14 @@ Deno.serve(async (req) => {
       success: true,
       action: 'initiate_soak',
       soak_state: 'SOAKING',
+      tos_phase: 'SOAKING',
       message: 'Soak Period initiated. Individual is encouraged to reflect before proceeding.'
     });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: complete_soak
-  // Transitions Soak Period SOAKING → COMPLETED and advances tos_phase to READY_TO_ACT.
+  // Transitions Soak Period: SOAKING → COMPLETED. Advances tos_phase to READY_TO_ACT.
   // Does NOT regenerate pathway matches.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'complete_soak') {
@@ -308,7 +340,7 @@ Deno.serve(async (req) => {
 
     if (currentSoakState !== 'SOAKING') {
       return Response.json({
-        error: `Invalid Soak Period transition: cannot complete from state '${currentSoakState}'. Only SOAKING → COMPLETED is valid.`,
+        error: `Invalid Soak Period transition: cannot complete from '${currentSoakState}'. Valid: SOAKING → COMPLETED.`,
         current_soak_state: currentSoakState
       }, { status: 400 });
     }
@@ -318,7 +350,7 @@ Deno.serve(async (req) => {
         ...currentSoak,
         state: 'COMPLETED',
         completed_date: new Date().toISOString(),
-        reflection_notes: reflection_notes || currentSoak.reflection_notes || ''
+        reflection_notes: (typeof reflection_notes === 'string' ? reflection_notes : '') || currentSoak.reflection_notes || ''
       },
       tos_phase: 'READY_TO_ACT'
     });
@@ -334,26 +366,23 @@ Deno.serve(async (req) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: bypass_soak
-  // Explicit, auditable bypass of the Soak Period.
-  // SOAKING or NOT_STARTED → BYPASSED. bypass_reason is required.
-  // The individual owns the decision — this gate is soft, not hard.
+  // Explicit, auditable bypass. NOT_STARTED or SOAKING → BYPASSED.
+  // bypass_reason is required — the individual owns the decision.
   // Does NOT regenerate pathway matches.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'bypass_soak') {
-    if (!soak_bypass_reason || soak_bypass_reason.trim().length < 10) {
+    if (!soak_bypass_reason || typeof soak_bypass_reason !== 'string' || soak_bypass_reason.trim().length < 10) {
       return Response.json({
-        error: 'bypass_reason is required and must be descriptive (min 10 chars). The bypass must be explicit and auditable.',
+        error: 'bypass_reason is required, must be a string, and must be descriptive (min 10 chars). The bypass must be explicit and auditable.'
       }, { status: 400 });
     }
 
     const currentSoak = profile.soak_period || {};
     const currentSoakState = currentSoak.state || 'NOT_STARTED';
 
-    // Can bypass from NOT_STARTED or SOAKING — not from COMPLETED or already BYPASSED
-    const validBypassStates = ['NOT_STARTED', 'SOAKING'];
-    if (!validBypassStates.includes(currentSoakState)) {
+    if (!['NOT_STARTED', 'SOAKING'].includes(currentSoakState)) {
       return Response.json({
-        error: `Invalid Soak Period transition: cannot bypass from state '${currentSoakState}'.`,
+        error: `Invalid Soak Period transition: cannot bypass from '${currentSoakState}'. Valid from: NOT_STARTED or SOAKING.`,
         current_soak_state: currentSoakState
       }, { status: 400 });
     }
@@ -380,7 +409,7 @@ Deno.serve(async (req) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: get_status
-  // Returns current Decision Readiness state without modifying anything.
+  // Returns current Decision Readiness state. No writes.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'get_status') {
     const expressedFactors = Object.entries(profile.decision_factors || {})
@@ -392,20 +421,20 @@ Deno.serve(async (req) => {
       action: 'get_status',
       tos_phase: profile.tos_phase,
       soak_period: profile.soak_period || { state: 'NOT_STARTED' },
-      pathway_count: (profile.recommended_pathways || []).length,
+      pathway_count: Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways.length : 0,
       expressed_decision_factors: expressedFactors,
-      capability_count: (profile.capability_map || []).length
+      capability_count: Array.isArray(profile.capability_map) ? profile.capability_map.length : 0
     });
   }
 
-  // Unknown action
+  // ─── Unknown action ───────────────────────────────────────────────────────
   return Response.json({
-    error: `Unknown action: '${action}'. Valid actions: record_decision_factor, evaluate_pathways, initiate_soak, complete_soak, bypass_soak, get_status.`
+    error: `Unknown action: '${action}'. Valid actions: get_status, record_decision_factor, evaluate_pathways, initiate_soak, complete_soak, bypass_soak.`
   }, { status: 400 });
 });
 
-// ─── Utility: token overlap scoring ───────────────────────────────────────
-// Simple word-level Jaccard similarity for fuzzy capability matching.
+// ─── Utility: token overlap scoring ──────────────────────────────────────────
+// Word-level Jaccard similarity for fuzzy capability matching.
 function tokenOverlap(a: string, b: string): number {
   const tokensA = new Set(a.split(/\s+/).filter(t => t.length > 2));
   const tokensB = new Set(b.split(/\s+/).filter(t => t.length > 2));
