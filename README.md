@@ -2,7 +2,7 @@
 
 **Mission:** Provide military personnel with a trusted companion that helps them understand their operational picture — capabilities, options, and next steps — throughout their transition journey.
 
-**Operational Phase:** Operation PROOF — Phases One, Two & Three COMPLETE. Phase Four **Decision Readiness** Design Intent v1.0 received (12 July 2026) — engineering build not yet commenced.
+**Operational Phase:** Operation PROOF — Phases One, Two & Three COMPLETE. Phase Four **Decision Readiness** — full specification received, **build authority granted 13 July 2026**.
 
 ---
 
@@ -33,7 +33,7 @@ All 10 foundational artefacts approved, locked, and committed:
 | 2 | Understanding | ✅ COMPLETE — Understanding Engine v2.0 + Companion Service v1.2 deployed & behaviourally validated (Exercise MIRROR) |
 | 3 | Evaluate (Capability Intelligence) | ✅ COMPLETE — Capability Intelligence Engine deployed & validated (Exercise LENS, Exercise LENS 2). Closed 6 July 2026. |
 | — | Consolidation Period | ✅ COMPLETE — see [Operations/Consolidation-Report-v1.0.md](./Operations/Consolidation-Report-v1.0.md) |
-| 4 | **Decision Readiness** | 📋 Design Intent v1.0 Draft received (12 Jul 2026) — [Operations/Phase-Four-Decision-Readiness-Design-Intent.md](./Operations/Phase-Four-Decision-Readiness-Design-Intent.md) |
+| 4 | **Decision Readiness** | 🔨 **BUILD IN PROGRESS** — authority granted 13 Jul 2026 |
 | 5 | Enable (Transition Partnership) | Planned |
 | 6 | Validate (Operational Validation) | Planned |
 
