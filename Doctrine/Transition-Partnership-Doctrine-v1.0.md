@@ -128,6 +128,8 @@ Transition Partnership relies heavily on continuity. Smudge remembers:
 
 The user should never feel like they are starting again.
 
+**Operational memory exists to preserve continuity, not accountability. The objective is to help the individual see their progress, not to measure their performance.**
+
 ## Canonical Questions
 
 Phase Five introduces a new family of questions. Instead of discovery:
