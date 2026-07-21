@@ -1,0 +1,77 @@
+{
+  "type": "object",
+  "name": "JourneyCheckpoint",
+  "description": "Sparse positional snapshots from the Transition Journey. Created only when the operational position materially changes — not every conversation, not every event. Previous positions preserved to establish meaningful delta, confidence trend, and adaptation history. Not an activity log. Not an event feed. A record of where the individual was, at moments when where they are changed.",
+  "properties": {
+    "journey_id": {
+      "type": "string",
+      "description": "Links to TransitionJourney"
+    },
+    "user_profile_id": {
+      "type": "string",
+      "description": "Links to UserProfile (denormalised for RLS scoping)"
+    },
+    "checkpoint_date": {
+      "type": "string",
+      "format": "date",
+      "description": "When the checkpoint was taken"
+    },
+    "partnership_state": {
+      "type": "string",
+      "enum": ["ACTIVE", "MONITORING", "SUPPORT_REQUIRED", "REFERRAL", "INDEPENDENT"],
+      "description": "Partnership state at time of checkpoint"
+    },
+    "transition_status_snapshot": {
+      "type": "object",
+      "description": "Transition status at time of checkpoint — positional snapshot",
+      "properties": {
+        "employment": { "type": "string" },
+        "training": { "type": "string" }
+      }
+    },
+    "confidence_band": {
+      "type": "string",
+      "enum": ["LOW", "BUILDING", "STEADY", "STRONG"],
+      "description": "Confidence band at time of checkpoint — behavioural, not numeric"
+    },
+    "active_commitments_snapshot": {
+      "type": "array",
+      "description": "Commitments at time of checkpoint — positional snapshot, not a history",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["ACTIVE", "COMPLETED", "PAUSED", "REVISED", "NO_LONGER_RELEVANT"]
+          }
+        }
+      }
+    },
+    "current_blockers_snapshot": {
+      "type": "array",
+      "description": "Blockers at time of checkpoint",
+      "items": { "type": "string" }
+    },
+    "wellbeing_awareness_snapshot": {
+      "type": "object",
+      "description": "Wellbeing awareness at time of checkpoint (if shared)",
+      "properties": {
+        "awareness": {
+          "type": "string",
+          "enum": ["NONE", "NOTED"]
+        },
+        "observation": { "type": "string" }
+      }
+    },
+    "operational_readiness": {
+      "type": "string",
+      "enum": ["ON_COURSE", "ADAPTING", "STALLED", "NEEDS_SUPPORT"],
+      "description": "Operational readiness at time of checkpoint"
+    },
+    "change_summary": {
+      "type": "string",
+      "description": "Brief description of what materially changed to trigger the checkpoint"
+    }
+  }
+}
