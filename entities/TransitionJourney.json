@@ -1,0 +1,164 @@
+{
+  "type": "object",
+  "name": "TransitionJourney",
+  "description": "The individual's current operational position during Phase Five (Transition Partnership). Living document — refreshed every interaction. This is what Smudge reads to resume a conversation seamlessly. Stores WHERE the individual is, not a log of what they've done.",
+  "properties": {
+    "user_profile_id": {
+      "type": "string",
+      "description": "Links to UserProfile — the individual whose journey this is"
+    },
+    "partnership_state": {
+      "type": "string",
+      "enum": ["ACTIVE", "MONITORING", "SUPPORT_REQUIRED", "REFERRAL", "INDEPENDENT"],
+      "description": "Partnership lifecycle state machine. INDEPENDENT is terminal — if user returns, a new journey begins."
+    },
+    "transition_status": {
+      "type": "object",
+      "description": "Current operational position — employment, training, applications, interviews. This is where the individual IS, not a log of what they've done.",
+      "properties": {
+        "employment": {
+          "type": "string",
+          "description": "Current employment situation"
+        },
+        "training": {
+          "type": "string",
+          "description": "Current training/learning activity"
+        },
+        "applications": {
+          "type": "array",
+          "description": "Active applications — current positional status",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string" },
+              "organisation": { "type": "string" },
+              "status": { "type": "string" },
+              "date": { "type": "string", "format": "date" }
+            }
+          }
+        },
+        "interviews": {
+          "type": "array",
+          "description": "Upcoming or recent interviews — current positional status",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string" },
+              "organisation": { "type": "string" },
+              "date": { "type": "string", "format": "date" },
+              "outcome": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "current_direction": {
+      "type": "string",
+      "description": "Carried from Phase Four — the individual's chosen pathway/direction"
+    },
+    "active_commitments": {
+      "type": "array",
+      "description": "User-owned commitments. Not promises to Smudge — commitments to themselves that Smudge helps them remember, review and revise without judgement.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "Auto-generated commitment ID" },
+          "description": { "type": "string", "description": "The commitment in the user's own words" },
+          "status": {
+            "type": "string",
+            "enum": ["ACTIVE", "COMPLETED", "PAUSED", "REVISED", "NO_LONGER_RELEVANT"],
+            "description": "No failure-oriented terminology. PAUSED = circumstances changed temporarily. REVISED = updated. NO_LONGER_RELEVANT = direction shifted."
+          },
+          "created_date": { "type": "string", "format": "date", "description": "When the commitment was made" },
+          "target_date": { "type": "string", "format": "date", "description": "Optional — only if user sets one" },
+          "completed_date": { "type": "string", "format": "date", "description": "When status moved to COMPLETED" },
+          "revised_from": { "type": "string", "description": "Previous commitment description if status is REVISED" }
+        }
+      }
+    },
+    "current_blockers": {
+      "type": "array",
+      "description": "Current obstacles. Positional, not historical. What's in the way right now.",
+      "items": { "type": "string" }
+    },
+    "confidence_band": {
+      "type": "string",
+      "enum": ["LOW", "BUILDING", "STEADY", "STRONG"],
+      "description": "Behavioural confidence band — NOT a numeric score. Smudge identifies movement between bands from conversation, not calculation."
+    },
+    "confidence_trend": {
+      "type": "string",
+      "enum": ["RISING", "STABLE", "FALLING", "VOLATILE"],
+      "description": "Movement direction between confidence bands, derived from checkpoint comparison."
+    },
+    "wellbeing_awareness": {
+      "type": "object",
+      "description": "Awareness state only. No diagnosis, no scoring, no clinical interpretation. Only populated if the individual has voluntarily shared something significant.",
+      "properties": {
+        "observation": { "type": "string", "description": "What was voluntarily shared — Smudge's record, not a clinical assessment" },
+        "date": { "type": "string", "format": "date", "description": "When the observation was made" },
+        "awareness": {
+          "type": "string",
+          "enum": ["NONE", "NOTED"],
+          "description": "NONE = nothing noted. NOTED = Smudge should be aware of this in conversation."
+        }
+      }
+    },
+    "significant_milestones": {
+      "type": "array",
+      "description": "Achieved milestones — for showing progress, not measuring performance",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string", "description": "What was achieved" },
+          "date": { "type": "string", "format": "date" }
+        }
+      }
+    },
+    "referral_history": {
+      "type": "array",
+      "description": "Referrals made to external organisations. Smudge decides when to refer, engine records.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "organisation": { "type": "string", "description": "External organisation name" },
+          "reason": { "type": "string", "description": "Why referral was made" },
+          "date": { "type": "string", "format": "date" },
+          "status": {
+            "type": "string",
+            "enum": ["PENDING", "ACTIVE", "RESOLVED"]
+          }
+        }
+      }
+    },
+    "operational_readiness": {
+      "type": "string",
+      "enum": ["ON_COURSE", "ADAPTING", "STALLED", "NEEDS_SUPPORT"],
+      "description": "Engine's assessment of current operational position. Partnership language, not judgement."
+    },
+    "last_interaction_date": {
+      "type": "string",
+      "format": "date",
+      "description": "When Smudge last spoke with the user"
+    },
+    "next_check_in_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Optional — when the next check-in should happen (Smudge's judgement)"
+    },
+    "journey_started_date": {
+      "type": "string",
+      "format": "date",
+      "description": "When Phase Five began"
+    },
+    "journey_concluded_date": {
+      "type": "string",
+      "format": "date",
+      "description": "When partnership concluded (if INDEPENDENT)"
+    },
+    "conclusion_summary": {
+      "type": "string",
+      "description": "How the individual transitioned to independence (if concluded)"
+    }
+  }
+}
