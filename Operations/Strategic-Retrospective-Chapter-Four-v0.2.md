@@ -1,7 +1,7 @@
 # Operation PROOF Strategic Retrospective
 ## Chapter Four – Engineer Trust. Audit Trust. Prove Trust.
 
-**Version:** 0.2 (Engineering Review Incorporated)  
+**Version:** 0.3 (Engineering Review Incorporated)  
 **Status:** Draft – Pending Final Approval
 
 ---
@@ -244,6 +244,20 @@ The behavioural exercises therefore became more than validation.
 
 They became cumulative regression tests for the companion itself.
 
+More precisely, the exercises did not turn behaviour into code.
+
+They turned code into something that could be behaviourally validated.
+
+The distinction matters.
+
+Behavioural consistency was not an emergent property of the technology.
+
+It was an engineering discipline applied to the technology — one that required deliberate architectural choices, explicit persona constraints, and a testing methodology capable of detecting when the companion had drifted from its intended character.
+
+The exercises were the testing layer.
+
+The architecture was what made the companion testable.
+
 ---
 
 # 4.8 The Repository Became Part of the Methodology
@@ -303,6 +317,16 @@ It could not be audited.
 If it could not be audited...
 
 It could not be sustained.
+
+And if it could not be sustained...
+
+It could not be trusted.
+
+Trust that depends on claims is fragile.
+
+Trust that depends on architecture is durable.
+
+The architecture is what makes trust self-sustaining rather than personality-dependent.
 
 ---
 
