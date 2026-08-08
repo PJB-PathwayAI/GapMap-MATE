@@ -1,28 +1,49 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
+import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+
+// ─── Serialization Adapter (MATE Engine Interface Contract) ───
+function parseJSON(value: any, fallback: any = undefined): any {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return fallback !== undefined ? fallback : value; }
+}
+
+function serializeForPersistence(data: any): any {
+  const result = { ...data };
+  for (const [key, value] of Object.entries(result)) {
+    if (value !== null && value !== undefined && typeof value === 'object') {
+      result[key] = JSON.stringify(value);
+    }
+  }
+  return result;
+}
+
+function deserializeProfile(profile: any): any {
+  const arrayFields = ['service_history', 'goals', 'operational_context', 'evidence_log', 'capability_map', 'confidence_scores', 'recommended_pathways', 'safety_flags', 'operational_picture_history', 'milestones'];
+  const objectFields = ['assessment_confidence', 'decision_factors', 'soak_period', 'communication_preferences'];
+  for (const f of arrayFields) { profile[f] = parseJSON(profile[f], []); }
+  for (const f of objectFields) { profile[f] = parseJSON(profile[f]); }
+  return profile;
+}
+
 
 /**
  * OCI Companion Service — Phase Two (Operation PROOF)
  * Smudge's companion orchestration layer
+ * v1.2 — Companion Behaviour Refinement (Exercise LENS AAR)
  *
  * Doctrine traceability:
  * - Architecture v1.0 §4: OCI Companion Service (orchestration + Operational Memory + safety gate)
- * - Architecture v1.0 §4a: Smudge = companion interface, no reasoning/memory — this service orchestrates
  * - Phase Two Design Intent v1.0: "The user should feel understood, not processed"
  * - Artefact 3: "Ask naturally, listen carefully, reflect understanding, confirm accuracy, build trust"
  * - Artefact 4: "Never rush, never assume, never diagnose, never recommend before understanding"
+ * - Companion Behaviour Refinement v1.0: Six refinements from Exercise LENS AAR
  *
- * What this service does (deterministic, testable):
- *   1. Manages conversation flow state (EXPLORING → REFLECTING → CONFIRMING → CONFIRMED)
- *   2. Routes discovery data to the Understanding Engine for validation/persistence
- *   3. Generates structured reflection content for Smudge to verbalize
- *   4. Provides flow guidance: which area to explore next, what's already known
- *   5. Enforces behavioural principles structurally (can't rush to confirmation)
- *
- * What this service does NOT do:
- *   - Generate natural language questions or reflections (that's Smudge/the LLM layer)
- *   - Interpret free text (that's Smudge)
- *   - Make recommendations
- *   - Assess emotional state
+ * v1.2 changes (Companion Behaviour Refinement):
+ *   - Enriched behavioural_notes with checkpoint signals (area reached substance)
+ *   - Milestone reflection signals (2+ areas thematically connected)
+ *   - Engagement awareness notes (low confidence + many areas explored)
+ *   - Topic completion guidance (don't re-explore areas that already have substance)
+ *   - Natural discovery principle: next_area is a suggestion, not a script
  *
  * Conversation modes:
  *   EXPLORING    — Smudge is discovering the six operational areas through conversation
@@ -41,7 +62,7 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 // ─── Conversation modes ───
 type ConversationMode = 'EXPLORING' | 'REFLECTING' | 'CONFIRMING' | 'CONFIRMED' | 'RE_EXPLORING';
 
-// ─── Area priority for exploration ───
+// ─── Area priority for exploration (suggestion, not script) ───
 const AREA_PRIORITY = [
   'Who are you?',
   'What have you done?',
@@ -148,8 +169,22 @@ function generateReflectionContent(profile: any, areas: AreaAssessment[]): strin
   return sections.join('\n\n');
 }
 
-// ─── Flow guidance ───
-function generateFlowGuidance(mode: ConversationMode, areas: AreaAssessment[], profile: any) {
+// ─── Flow guidance (v1.2 — enriched with companion behaviour signals) ───
+
+function generateFlowGuidance(
+  mode: ConversationMode,
+  areas: AreaAssessment[],
+  profile: any,
+  previousAreas: AreaAssessment[] | null  // v1.2: compare to detect newly-substantive areas
+): {
+  next_area_to_explore: string | null;
+  areas_with_substance: string[];
+  areas_missing: string[];
+  ready_to_reflect: boolean;
+  ready_to_confirm: boolean;
+  reflection_content: string | null;
+  behavioural_notes: string[];
+} {
   const withSubstance = areas.filter(a => a.has_substance).map(a => a.area);
   const missing = areas.filter(a => !a.has_substance).map(a => a.area);
   const nextArea = AREA_PRIORITY.find(name => missing.includes(name)) || null;
@@ -160,24 +195,68 @@ function generateFlowGuidance(mode: ConversationMode, areas: AreaAssessment[], p
   if (mode === 'REFLECTING' || (readyToReflect && mode !== 'CONFIRMED'))
     reflectionContent = generateReflectionContent(profile, areas);
 
+  // ─── Behavioural notes (v1.2 — enriched) ───
   const notes: string[] = [];
+
+  // 1. Exploration guidance
   if (missing.length > 0 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
     notes.push(`Still exploring — ${missing.length} area(s) need substance before reflecting.`);
-    if (nextArea) notes.push(`Natural next area: "${nextArea}". But let the conversation flow — don't force the order if the user naturally covers another area.`);
+    if (nextArea) {
+      notes.push(`Suggested next area: "${nextArea}". This is a suggestion, not a script — if the user naturally covers another area, follow them.`);
+    }
   }
+
+  // 2. Topic completion checkpoints (v1.2)
+  // If an area just gained substance in this exchange, signal that it's time to checkpoint
+  if (previousAreas && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
+    for (const area of areas) {
+      const wasMissing = previousAreas.find(a => a.area === area.area)?.has_substance === false;
+      const nowHas = area.has_substance;
+      if (wasMissing && nowHas) {
+        notes.push(`CHECKPOINT: "${area.area}" just reached substance. Consider a topic completion checkpoint: "I think I've got a good picture of that now. Anything else before we move on?" Don't keep probing this area.`);
+      }
+    }
+  }
+
+  // 3. Don't re-explore areas that already have substance (v1.2)
+  if (withSubstance.length > 0 && withSubstance.length < 6 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
+    notes.push(`Areas already with substance: ${withSubstance.join(', ')}. Don't re-explore these unless the user voluntarily expands. Move to missing areas: ${missing.join(', ')}.`);
+  }
+
+  // 4. Milestone reflection signals (v1.2)
+  // When 2+ areas have substance and are thematically connected, flag a milestone reflection opportunity
+  if (withSubstance.length >= 2 && withSubstance.length < 6 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
+    notes.push(`MILESTONE: ${withSubstance.length} areas now have substance. If a natural moment arises (user links two themes, or pauses), a brief milestone reflection is appropriate — but keep it short. Don't reflect after every answer.`);
+  }
+
+  // 5. Reflection readiness
   if (readyToReflect) {
     notes.push("All six areas have substance. Time to reflect the picture back — in the user's own language, not a data dump.");
-    notes.push("Reflect what you genuinely understand, not just what's stored. If something feels thin, say so honestly.");
+    notes.push("Reflect what you genuinely understand, not just what's stored. If something feels thin even though it has 'substance', say so honestly.");
+    notes.push("Use everyday military language in the reflection. Civilian translation comes later at the Capability Picture stage.");
   }
+
+  // 6. Confirmation guidance
   if (mode === 'CONFIRMING') {
     notes.push('Inviting confirmation — frame it as "does this sound like you?" not "please confirm your data."');
-    notes.push("If the user corrects something, that's good — they're engaged. Go back and explore the gap.");
+    notes.push("If the user corrects something, that's good — they're engaged. Go back and explore the gap, don't treat it as a failure.");
   }
+
+  // 7. Post-confirmation
   if (mode === 'CONFIRMED') {
     notes.push('Picture confirmed. The user has agreed this is them. Phase Three (Evaluate) can begin when ready.');
   }
-  if (profile.user_confidence !== null && profile.user_confidence < 4 && mode !== 'CONFIRMED')
-    notes.push(`User confidence is low (${profile.user_confidence}/10). Be steady — don't rush toward solutions.`);
+
+  // 8. Low confidence awareness (v1.2 — refined)
+  if (profile.user_confidence !== null && profile.user_confidence < 4 && mode !== 'CONFIRMED') {
+    notes.push(`User confidence is low (${profile.user_confidence}/10). Be steady — don't rush toward solutions. The picture matters more than the pace.`);
+    notes.push("If the user signals boredom or frustration ('where's this going'), don't push through. Either close the current topic with a checkpoint, or bring the reflection forward if enough areas have substance.");
+  }
+
+  // 9. Conversational momentum reminder (v1.2)
+  if (withSubstance.length >= 3 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
+    notes.push("MOMENTUM: Good progress — 3+ areas covered. Vary the conversation rhythm. Don't let every exchange become Q→Reflect→Q→Reflect. Use mini acknowledgements ('got you', 'makes sense') between questions. Reserve full reflections for milestones.");
+  }
 
   return {
     next_area_to_explore: nextArea,
@@ -191,6 +270,7 @@ function generateFlowGuidance(mode: ConversationMode, areas: AreaAssessment[], p
 }
 
 // ─── Main service ───
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -209,95 +289,111 @@ Deno.serve(async (req) => {
       profile_id,
       current_mode = 'EXPLORING',
       new_discoveries,
-      user_response_type = 'answering',
+      user_response_type = 'answering',  // answering | correcting | confirming | rejecting
     } = body;
 
-    if (!profile_id) return Response.json({ error: "Missing profile_id" }, { status: 400 });
+    if (!profile_id) {
+      return Response.json({ error: "Missing profile_id" }, { status: 400 });
+    }
 
     const profile = await base44.asServiceRole.entities.UserProfile.get(profile_id);
-    if (!profile) return Response.json({ error: "Profile not found" }, { status: 404 });
+    if (!profile) {
+      return Response.json({ error: "Profile not found" }, { status: 404 });
+    }
+    deserializeProfile(profile);
 
-    // ─── Step 1: Merge new discoveries + handle confirmation/rejection ───
-    const hasNewData = new_discoveries && Object.keys(new_discoveries).length > 0;
-    const isConfirming = user_response_type === 'confirming';
-    const isRejecting = user_response_type === 'rejecting';
+    // ─── Assess areas BEFORE processing (v1.2: for checkpoint detection) ───
+    const previousAreas = new_discoveries && Object.keys(new_discoveries).length > 0
+      ? assessAreas(profile)
+      : null;
 
-    const merged = {
-      full_name: new_discoveries?.full_name ?? profile.full_name,
-      contact_email: new_discoveries?.contact_email ?? profile.contact_email,
-      service_branch: new_discoveries?.service_branch ?? profile.service_branch,
-      rank: new_discoveries?.rank ?? profile.rank,
-      years_served: new_discoveries?.years_served ?? profile.years_served,
-      professional_identity: new_discoveries?.professional_identity ?? profile.professional_identity,
-      service_history: new_discoveries?.service_history?.length ? new_discoveries.service_history : profile.service_history || [],
-      personal_context: new_discoveries?.personal_context ?? profile.personal_context,
-      goals: new_discoveries?.goals?.length ? new_discoveries.goals : profile.goals || [],
-      operational_context: new_discoveries?.operational_context?.length ? new_discoveries.operational_context : profile.operational_context || [],
-      user_confidence: new_discoveries?.user_confidence ?? profile.user_confidence,
-      operational_picture_confirmed: isConfirming ? true : (isRejecting || user_response_type === 'correcting') ? false : (profile.operational_picture_confirmed ?? false),
-    };
-
-    // ─── Step 2: Assess all six areas ───
-    const areas = assessAreas(merged);
-    const allSixSubstantive = areas.every(a => a.has_substance);
-    const minUnderstanding = ['Who are you?', 'What have you done?', 'Where are you now?', 'Where are you going?']
-      .every(name => areas.find(a => a.area === name)!.has_substance);
-
-    // ─── Step 3: Calculate confidence ───
-    const confidence = calcConfidence(areas, merged.operational_picture_confirmed);
-
-    // ─── Step 4: Phase gate ───
-    let newPhase = profile.tos_phase;
-    if (minUnderstanding && profile.tos_phase === 'Discover') newPhase = 'Understand';
-
-    // ─── Step 5: Persist if anything changed ───
-    const needsUpdate = hasNewData || isConfirming || isRejecting || user_response_type === 'correcting';
+    // ─── Step 1: If new discoveries provided, process and persist ───
     let updatedProfile = profile;
-    if (needsUpdate) {
-      updatedProfile = await base44.asServiceRole.entities.UserProfile.update(profile_id, {
+    let engineResult: any = null;
+
+    if (new_discoveries && Object.keys(new_discoveries).length > 0) {
+      const merged = {
+        full_name: new_discoveries.full_name ?? profile.full_name,
+        contact_email: new_discoveries.contact_email ?? profile.contact_email,
+        service_branch: new_discoveries.service_branch ?? profile.service_branch,
+        rank: new_discoveries.rank ?? profile.rank,
+        years_served: new_discoveries.years_served ?? profile.years_served,
+        professional_identity: new_discoveries.professional_identity ?? profile.professional_identity,
+        service_history: new_discoveries.service_history?.length ? new_discoveries.service_history : profile.service_history || [],
+        personal_context: new_discoveries.personal_context ?? profile.personal_context,
+        goals: new_discoveries.goals?.length ? new_discoveries.goals : profile.goals || [],
+        operational_context: new_discoveries.operational_context?.length ? new_discoveries.operational_context : profile.operational_context || [],
+        user_confidence: new_discoveries.user_confidence !== undefined ? new_discoveries.user_confidence : profile.user_confidence,
+        operational_picture_confirmed: user_response_type === 'rejecting'
+          ? false
+          : (user_response_type === 'confirming' ? true : (profile.operational_picture_confirmed ?? false)),
+      };
+
+      const areas = assessAreas(merged);
+      const allCoreSubstantive = areas.slice(0, 5).every(a => a.has_substance);
+      const understandingSubstantive = areas[5].has_substance;
+      const minUnderstanding = ['Who are you?', 'What have you done?', 'Where are you now?', 'Where are you going?']
+        .every(name => areas.find(a => a.area === name)!.has_substance);
+
+      let newPhase = profile.tos_phase;
+      if (minUnderstanding && profile.tos_phase === 'Discover') newPhase = 'Understand';
+
+      const userConfirmed = merged.operational_picture_confirmed === true;
+      const readyForConfirmation = allCoreSubstantive && understandingSubstantive;
+
+      const confidence = calcConfidence(areas, userConfirmed);
+
+      updatedProfile = await base44.asServiceRole.entities.UserProfile.update(profile_id, serializeForPersistence({
         ...merged,
-        assessment_confidence: {
-          overall_score: confidence.overall_score,
-          rating: confidence.rating,
-          areas: areas.map(a => ({ area: a.area, score: a.score, notes: a.notes }))
-        },
+        assessment_confidence: { overall_score: confidence.overall_score, rating: confidence.rating, areas: areas.map(a => ({ area: a.area, score: a.score, notes: a.notes })) },
         tos_phase: newPhase,
-      });
+      }));
+      deserializeProfile(updatedProfile);
+
+      engineResult = {
+        areas,
+        missing_areas: areas.filter(a => !a.has_substance).map(a => a.area),
+        ready_for_confirmation: readyForConfirmation,
+        can_proceed: userConfirmed && readyForConfirmation,
+        assessment_confidence: confidence,
+      };
     }
 
-    // ─── Step 6: Determine conversation mode ───
+    // ─── Step 2: Determine conversation mode ───
     let mode: ConversationMode = current_mode as ConversationMode;
 
-    if (isConfirming && allSixSubstantive && merged.operational_picture_confirmed) {
-      mode = 'CONFIRMED';
-    } else if (isRejecting || user_response_type === 'correcting') {
-      mode = 'RE_EXPLORING';
-    } else if (allSixSubstantive && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
-      mode = 'REFLECTING';
-    } else if (mode === 'RE_EXPLORING' && allSixSubstantive) {
-      mode = 'REFLECTING';
+    if (engineResult) {
+      if (user_response_type === 'confirming' && engineResult.can_proceed) {
+        mode = 'CONFIRMED';
+      } else if (user_response_type === 'rejecting' || user_response_type === 'correcting') {
+        mode = 'RE_EXPLORING';
+      } else if (engineResult.ready_for_confirmation && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
+        mode = 'REFLECTING';
+      } else if (mode === 'RE_EXPLORING' && engineResult.missing_areas.length === 0) {
+        mode = 'REFLECTING';
+      }
     }
 
-    // ─── Step 7: Generate flow guidance ───
-    const guidance = generateFlowGuidance(mode, areas, updatedProfile);
+    // ─── Step 3: Generate flow guidance (v1.2 — with previous areas for checkpoint detection) ───
+    const currentAreas = engineResult?.areas || assessAreas(updatedProfile);
+    const guidance = generateFlowGuidance(mode, currentAreas, updatedProfile, previousAreas);
 
-    // ─── Step 8: Build response ───
+    // ─── Step 4: Build session context ───
     const sessionContext = {
       mode,
-      areas_explored: areas.filter(a => a.has_substance).map(a => a.area),
-      areas_outstanding: areas.filter(a => !a.has_substance).map(a => a.area),
+      areas_explored: currentAreas.filter((a: any) => a.has_substance).map((a: any) => a.area),
+      areas_outstanding: currentAreas.filter((a: any) => !a.has_substance).map((a: any) => a.area),
       profile_phase: updatedProfile.tos_phase,
-      assessment_confidence: confidence.rating,
-      assessment_score: confidence.overall_score,
+      assessment_confidence: updatedProfile.assessment_confidence?.rating || 'LOW',
       user_confidence: updatedProfile.user_confidence,
       confirmed: updatedProfile.operational_picture_confirmed === true,
-      can_proceed_to_phase_three: merged.operational_picture_confirmed === true && allSixSubstantive,
     };
 
     return new Response(JSON.stringify({
       session: sessionContext,
       flow_guidance: guidance,
       profile: updatedProfile,
+      ...(engineResult ? { engine_result: engineResult } : {}),
     }), {
       headers: {
         "Content-Type": "application/json",

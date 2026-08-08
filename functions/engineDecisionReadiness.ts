@@ -1,4 +1,4 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
+import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
 
 /**
  * engineDecisionReadiness.ts
@@ -82,7 +82,7 @@ Deno.serve(async (req) => {
   // ─── Evidence log index (for reference validation) ────────────────────────
   const evidenceIndex = new Set<string>(
     Array.isArray(profile.evidence_log)
-      ? profile.evidence_log.map((e: any) => String(e.id))
+      ? profile.evidence_log.map((e: any) => String(e.evidence_id || e.id))
       : []
   );
 
@@ -183,11 +183,11 @@ Deno.serve(async (req) => {
 
     // Normalise capability set
     const profileCapabilities = capabilityMap.map((cap: any) => ({
-      name: (cap.capability || '').toLowerCase().trim(),
-      confidence: cap.confidence || 0,
+      name: (cap.skill || cap.capability || '').toLowerCase().trim(),
+      confidence: cap.score || cap.confidence || 0,
       evidence_refs: Array.isArray(cap.evidence_refs)
         ? cap.evidence_refs
-        : (cap.evidence_ref ? [cap.evidence_ref] : []),
+        : (cap.evidence_ref ? String(cap.evidence_ref).split(',').map((r: string) => r.trim()) : []),
       category: cap.category || ''
     }));
 

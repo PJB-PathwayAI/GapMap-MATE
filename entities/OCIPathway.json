@@ -1,0 +1,54 @@
+{
+  "entity_name": "OCIPathway",
+  "description": "Curated civilian career pathways mapped to military capability profiles. Each pathway includes structured provenance references for evidence-based career mapping.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string" },
+      "purpose": { "type": "string" },
+      "civilian_context": { "type": "string" },
+      "capability_profile": { "type": "array", "items": { "type": "string" } },
+      "typical_responsibilities": { "type": "array", "items": { "type": "string" } },
+      "civilian_terminology": { "type": "array", "items": { "type": "string" } },
+      "entry_routes": { "type": "array", "items": { "type": "string" } },
+      "development_opportunities": { "type": "array", "items": { "type": "string" } },
+      "common_transition_gaps": { "type": "array", "items": { "type": "string" } },
+      "lifestyle_considerations": {
+        "type": "object",
+        "properties": {
+          "hours": { "type": "string" },
+          "shift_patterns": { "type": "string" },
+          "travel": { "type": "string" },
+          "remote_hybrid": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      },
+      "evidence_source": {
+        "type": "string",
+        "description": "Legacy plain-text field — retained for backwards compatibility. Use provenance_references for structured entries."
+      },
+      "provenance_references": {
+        "type": "array",
+        "description": "Structured provenance records. Each entry is a traceable, reviewable source for this pathway's content.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string", "description": "Title of the source document or page" },
+            "organisation": { "type": "string", "description": "Publishing or owning organisation" },
+            "source_type": { "type": "string", "description": "e.g. Qualification framework, Occupational standard, Sector guidance, Workforce data, Regulatory framework, Recruitment guidance" },
+            "url": { "type": "string", "description": "Reference URL where available" },
+            "retrieved_date": { "type": "string", "description": "Date this source was accessed or reviewed (YYYY-MM-DD)" },
+            "reviewer": { "type": "string", "description": "Who reviewed this source" },
+            "review_status": { "type": "string", "enum": ["current", "needs_review", "superseded"], "description": "Whether the source is considered current" }
+          }
+        }
+      },
+      "review_status": { "type": "string", "enum": ["active", "under_review", "retired"] },
+      "version": { "type": "number" },
+      "last_reviewed": { "type": "string" }
+    },
+    "required": []
+  },
+  "seeded_records": 8,
+  "provenance_standard": "OCI-Pathway-Provenance-Standard-v1.0"
+}
