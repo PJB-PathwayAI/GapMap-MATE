@@ -16,7 +16,7 @@
 | 5 | Data Management & Retention | ✅ | Ash |
 | 6 | Safeguarding Workflow | ✅ | Ash |
 | 7 | Deployment Checklist | ✅ | Ash |
-| 8 | Known Issues Register | ⬜ | Ash |
+| 8 | Known Issues Register | ✅ | Ash |
 | 9 | Pilot Acceptance Checklist | ⬜ | Ash |
 | | **Experience** | | |
 | 10 | Landing Page Complete | ⬜ | Paul & Cipher |
