@@ -15,7 +15,7 @@
 | 4 | Logging & Diagnostics | ✅ | Ash |
 | 5 | Data Management & Retention | ✅ | Ash |
 | 6 | Safeguarding Workflow | ✅ | Ash |
-| 7 | Deployment Checklist | ⬜ | Ash |
+| 7 | Deployment Checklist | ✅ | Ash |
 | 8 | Known Issues Register | ⬜ | Ash |
 | 9 | Pilot Acceptance Checklist | ⬜ | Ash |
 | | **Experience** | | |
