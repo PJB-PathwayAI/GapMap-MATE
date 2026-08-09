@@ -17,7 +17,7 @@
 | 6 | Safeguarding Workflow | ✅ | Ash |
 | 7 | Deployment Checklist | ✅ | Ash |
 | 8 | Known Issues Register | ✅ | Ash |
-| 9 | Pilot Acceptance Checklist | ⬜ | Ash |
+| 9 | Pilot Acceptance Checklist | ✅ | Ash |
 | | **Experience** | | |
 | 10 | Landing Page Complete | ⬜ | Paul & Cipher |
 | 11 | Smudge Identity Complete | ⬜ | Paul & Cipher |
