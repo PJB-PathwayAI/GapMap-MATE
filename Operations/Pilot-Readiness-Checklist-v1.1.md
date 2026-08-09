@@ -11,7 +11,7 @@
 | | **Engineering** | | |
 | 1 | MVP Core Frozen | ✅ | Ash |
 | 2 | Engineering Baseline Accepted | ✅ | All |
-| 3 | Test Accounts & Reset Strategy | ⬜ | Ash |
+| 3 | Test Accounts & Reset Strategy | ✅ | Ash |
 | 4 | Logging & Diagnostics | ⬜ | Ash |
 | 5 | Data Management & Retention | ⬜ | Ash |
 | 6 | Safeguarding Workflow | ⬜ | Ash |
