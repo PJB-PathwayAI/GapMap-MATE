@@ -57,7 +57,8 @@ Deno.serve(async (req) => {
   // ─── Load profile — wrapped to handle SDK exceptions on malformed IDs ────
   let profile: any;
   try {
-    profile = await base44.asServiceRole.entities.UserProfile.get(profile_id.trim());
+    // Ownership validation: user-scoped read (RLS-enforced) — S-004
+      profile = await base44.entities.UserProfile.get(profile_id.trim());
   } catch (err: any) {
     return Response.json({
       error: 'Profile lookup failed',
@@ -880,7 +881,18 @@ Deno.serve(async (req) => {
       }, { status: 400 });
     }
 
-    // Material change — state transition
+    // 2G-NF-9: Validate INDEPENDENT reason BEFORE checkpoint creation to prevent orphan checkpoints
+    if (new_state === 'INDEPENDENT') {
+      // 2G-B: Settlement requires substantive audit evidence.
+      if (!reason || typeof reason !== 'string' || reason.trim().length < 15) {
+        return Response.json({
+          error: 'reason is required when transitioning to INDEPENDENT and must be substantive (min 15 chars). The user\'s basis for independence must be recorded.',
+          received_length: reason ? reason.trim().length : 0
+        }, { status: 400 });
+      }
+    }
+
+    // Material change — state transition (all validations passed, checkpoint now safe to create)
     const changeSummary = `Partnership state transition: ${currentState} → ${new_state}`;
     await createCheckpoint(journey, changeSummary);
 
@@ -892,7 +904,7 @@ Deno.serve(async (req) => {
     // If moving to INDEPENDENT, this is the terminal state
     if (new_state === 'INDEPENDENT') {
       updateFields.journey_concluded_date = new Date().toISOString().split('T')[0];
-      updateFields.conclusion_summary = reason || 'The individual has demonstrated sustained confidence, stability and self-direction.';
+      updateFields.conclusion_summary = reason.trim();
 
       // Update tos_phase to SETTLED
       await base44.asServiceRole.entities.UserProfile.update(profile_id, {
@@ -960,6 +972,15 @@ Deno.serve(async (req) => {
   if (action === 'conclude_journey') {
     const { summary } = body;
 
+    // 2G-B: Settlement requires substantive audit evidence.
+    // The conclusion_summary is the persisted record of WHY the user no longer needs active support.
+    if (!summary || typeof summary !== 'string' || summary.trim().length < 15) {
+      return Response.json({
+        error: 'summary is required for conclude_journey and must be substantive (min 15 chars). The user\'s basis for independence must be recorded.',
+        received_length: summary ? summary.trim().length : 0
+      }, { status: 400 });
+    }
+
     const journey = await findActiveJourney(profile_id);
     if (!journey) {
       return Response.json({ error: 'No active journey found.' }, { status: 400 });
@@ -982,7 +1003,7 @@ Deno.serve(async (req) => {
     const updatedJourney = await base44.asServiceRole.entities.TransitionJourney.update(journey.id, {
       partnership_state: 'INDEPENDENT',
       journey_concluded_date: today,
-      conclusion_summary: summary || 'The individual has demonstrated sustained confidence, stability and self-direction. The partnership has succeeded.',
+      conclusion_summary: summary.trim(),
       last_interaction_date: today
     });
 
