@@ -49,7 +49,8 @@ Deno.serve(async (req) => {
   // ─── Load profile — wrapped to handle SDK exceptions on malformed IDs ────
   let profile: any;
   try {
-    profile = await base44.asServiceRole.entities.UserProfile.get(profile_id.trim());
+    // Ownership validation: user-scoped read (RLS-enforced) — S-004
+      profile = await base44.entities.UserProfile.get(profile_id.trim());
   } catch (err: any) {
     return Response.json({
       error: 'Profile lookup failed',
@@ -377,12 +378,39 @@ Deno.serve(async (req) => {
       }, { status: 400 });
     }
 
+    // DF-1: At least 1 pathway must exist before advancing to READY_TO_ACT
+    const pathwayCount = Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways.length : 0;
+    if (pathwayCount === 0) {
+      return Response.json({
+        error: 'Cannot complete soak — no recommended pathways have been evaluated. Call evaluate_pathways first.',
+        pathway_count: 0
+      }, { status: 403 });
+    }
+
+    // DF-2: At least 1 expressed evidenced decision factor required
+    const expressedFactors = Object.entries(profile.decision_factors || {})
+      .filter(([, v]: [string, any]) => v?.expressed === true);
+    if (expressedFactors.length === 0) {
+      return Response.json({
+        error: 'Cannot complete soak — no decision factors have been expressed. Record at least one decision factor first.',
+        expressed_factor_count: 0
+      }, { status: 403 });
+    }
+
+    // DF-3: Reflection notes must be substantive (min 15 chars)
+    const reflectionContent = (typeof reflection_notes === 'string' ? reflection_notes.trim() : '');
+    if (reflectionContent.length < 15) {
+      return Response.json({
+        error: 'reflection_notes is required for complete_soak and must be substantive (min 15 chars). The user must articulate their reflection.'
+      }, { status: 400 });
+    }
+
     await base44.asServiceRole.entities.UserProfile.update(profile_id, {
       soak_period: {
         ...currentSoak,
         state: 'COMPLETED',
         completed_date: new Date().toISOString(),
-        reflection_notes: (typeof reflection_notes === 'string' ? reflection_notes : '') || currentSoak.reflection_notes || ''
+        reflection_notes: reflectionContent
       },
       tos_phase: 'READY_TO_ACT'
     });
@@ -398,9 +426,10 @@ Deno.serve(async (req) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTION: bypass_soak
-  // Explicit, auditable bypass. soak_period.state: NOT_STARTED | SOAKING → BYPASSED.
+  // Explicit, auditable bypass. soak_period.state: SOAKING → BYPASSED.
   // Advances tos_phase: EVALUATING → READY_TO_ACT.
   // bypass_reason required — the individual owns the decision.
+  // Decision 5: bypass only from SOAKING — user must enter the Soak Period first.
   // Does NOT regenerate pathway matches.
   // ─────────────────────────────────────────────────────────────────────────
   if (action === 'bypass_soak') {
@@ -413,11 +442,32 @@ Deno.serve(async (req) => {
     const currentSoak = profile.soak_period || {};
     const currentSoakState = currentSoak.state || 'NOT_STARTED';
 
-    if (!['NOT_STARTED', 'SOAKING'].includes(currentSoakState)) {
+    // Decision 5: bypass only from SOAKING — NOT_STARTED is rejected
+    // INFORM → SOAK → DECIDE: user must enter the Soak Period before bypassing
+    if (currentSoakState !== 'SOAKING') {
       return Response.json({
-        error: `Invalid Soak Period transition: cannot bypass from '${currentSoakState}'. Valid from: NOT_STARTED or SOAKING.`,
+        error: `Invalid Soak Period transition: cannot bypass from '${currentSoakState}'. Bypass requires SOAKING — the user must first enter the Soak Period via initiate_soak.`,
         current_soak_state: currentSoakState
       }, { status: 400 });
+    }
+
+    // DF-1: At least 1 pathway must exist before advancing to READY_TO_ACT
+    const pathwayCount = Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways.length : 0;
+    if (pathwayCount === 0) {
+      return Response.json({
+        error: 'Cannot bypass soak — no recommended pathways have been evaluated. Call evaluate_pathways first.',
+        pathway_count: 0
+      }, { status: 403 });
+    }
+
+    // DF-2: At least 1 expressed evidenced decision factor required
+    const expressedFactors = Object.entries(profile.decision_factors || {})
+      .filter(([, v]: [string, any]) => v?.expressed === true);
+    if (expressedFactors.length === 0) {
+      return Response.json({
+        error: 'Cannot bypass soak — no decision factors have been expressed. Record at least one decision factor first.',
+        expressed_factor_count: 0
+      }, { status: 403 });
     }
 
     await base44.asServiceRole.entities.UserProfile.update(profile_id, {
