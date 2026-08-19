@@ -1,14 +1,16 @@
 import { createClientFromRequest } from "npm:@base44/sdk@0.8.31";
 
 // ============================================================
-// smudgeOrchestrator — R1-C.1A FOUNDATION
+// smudgeOrchestrator — R1-C.1A FOUNDATION (R1-C.1A-C CLEAN)
 //
 // SCOPE: EXPLORING / CONFIRMING only (interpretation, no engine call)
 // ALL OTHER PHASES: NOT_YET_IMPLEMENTED
 //
+// R1-C.1A-C: Test bypass removed. Production-only profile resolution.
+//
 // PROVES:
 //   1. Authenticated invocation works
-//   2. Canonical profile context acquisition
+//   2. Canonical profile context acquisition (RLS-protected)
 //   3. Canonical tos_phase read
 //   4. InvokeLLM structured interpretation works
 //   5. No profile mutation
@@ -66,34 +68,22 @@ Deno.serve(async (req) => {
     const base44 = createClientFromRequest(req);
 
     // ==================================================
-    // 1. PROFILE CONTEXT ACQUISITION
+    // 1. PROFILE CONTEXT ACQUISITION (production only — RLS-protected)
     // ==================================================
 
-    let profile_id: string;
-    let profile: any;
-
-    if (body._test_mode === true && body.test_profile_id) {
-      // TEST MODE ONLY — bypasses auth for verification
-      // This path will be removed before production
-      profile = await base44.asServiceRole.entities.UserProfile.get(body.test_profile_id);
-      profile_id = body.test_profile_id;
-    } else {
-      // PRODUCTION: authenticate and find user's profile
-      // Follows the proven profileBootstrap / Dashboard.jsx pattern
-      const profiles = await base44.entities.UserProfile.list();
-      if (profiles.length > 0) {
-        profile_id = profiles[0].id;
-        profile = profiles[0];
-      } else {
-        return new Response(JSON.stringify({
-          success: false,
-          error: "NO_PROFILE",
-          response_text: "I don't have your profile set up yet. Please visit your dashboard to get started, then come back and we can talk.",
-          tos_phase: null,
-          state_changed: false
-        }), { headers: cors });
-      }
+    const profiles = await base44.entities.UserProfile.list();
+    if (profiles.length === 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: "NO_PROFILE",
+        response_text: "I don't have your profile set up yet. Please visit your dashboard to get started, then come back and we can talk.",
+        tos_phase: null,
+        state_changed: false
+      }), { headers: cors });
     }
+
+    const profile_id = profiles[0].id;
+    let profile = profiles[0];
 
     // Deserialize profile (canonical adapter pattern)
     profile = deserializeProfile(profile);
@@ -171,7 +161,7 @@ Deno.serve(async (req) => {
       "- Areas still outstanding: " + (areas_outstanding.join(", ") || "none") + "\n" +
       "- Professional identity: " + (profile_context.professional_identity || "not yet shared") + "\n" +
       "- Service branch: " + (profile_context.service_branch || "not yet shared") + "\n\n" +
-      "The user just said: \"" + user_message + "\"\n\n" +
+      'The user just said: "' + user_message + '"\n\n' +
       "Extract candidate discoveries from this message. Rules:\n" +
       "1. Only extract what the user DIRECTLY expressed or STRONGLY implied\n" +
       "2. Do NOT invent or fabricate information\n" +
