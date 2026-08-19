@@ -1,23 +1,23 @@
 import { createClientFromRequest } from "npm:@base44/sdk@0.8.31";
 
 // ============================================================
-// smudgeOrchestrator — R1-C.1A FOUNDATION (R1-C.1A-C CLEAN)
+// smudgeOrchestrator — R1-C.1B (companionService integration)
 //
-// SCOPE: EXPLORING / CONFIRMING only (interpretation, no engine call)
-// ALL OTHER PHASES: NOT_YET_IMPLEMENTED
+// SCOPE: EXPLORING only
+// Engine connection: companionService (Understanding only)
 //
 // R1-C.1A-C: Test bypass removed. Production-only profile resolution.
+// R1-C.1B: Deterministic validation gate + companionService call.
 //
 // PROVES:
-//   1. Authenticated invocation works
-//   2. Canonical profile context acquisition (RLS-protected)
-//   3. Canonical tos_phase read
-//   4. InvokeLLM structured interpretation works
-//   5. No profile mutation
-//   6. No engine invocation
+//   1. user expression → LLM interpretation → deterministic validation
+//   2. Validated discoveries → companionService → authorised profile update
+//   3. Orchestrator never writes UserProfile directly
+//   4. Orchestrator never writes tos_phase
+//   5. Lifecycle transitions owned by companionService
 // ============================================================
 
-// --- Serialization adapters (following companionService canonical pattern) ---
+// --- Serialization adapters ---
 
 function parseJSON(value: any, fallback: any = undefined): any {
   if (value === null || value === undefined) return fallback;
@@ -26,21 +26,14 @@ function parseJSON(value: any, fallback: any = undefined): any {
 }
 
 function deserializeProfile(profile: any): any {
-  const arrayFields = [
-    "service_history", "goals", "operational_context", "evidence_log",
-    "capability_map", "confidence_scores", "recommended_pathways",
-    "safety_flags", "operational_picture_history", "milestones"
-  ];
-  const objectFields = [
-    "assessment_confidence", "decision_factors", "soak_period",
-    "communication_preferences"
-  ];
+  const arrayFields = ["service_history", "goals", "operational_context", "evidence_log", "capability_map", "confidence_scores", "recommended_pathways", "safety_flags", "operational_picture_history", "milestones"];
+  const objectFields = ["assessment_confidence", "decision_factors", "soak_period", "communication_preferences"];
   for (const f of arrayFields) { profile[f] = parseJSON(profile[f], []); }
   for (const f of objectFields) { profile[f] = parseJSON(profile[f]); }
   return profile;
 }
 
-// --- Substance threshold (locked from Packet 1) ---
+// --- Substance threshold ---
 const SUBSTANCE_THRESHOLD = 15;
 
 function isSubstantive(value: any): boolean {
@@ -49,6 +42,73 @@ function isSubstantive(value: any): boolean {
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === "object") return Object.keys(value).length > 0;
   return false;
+}
+
+// --- Deterministic validation gate ---
+// CONFIDENCE THRESHOLD: "high" for direct_statement only.
+// This threshold is FIXED. The LLM does not decide it dynamically.
+
+const ACCEPTABLE_SOURCE_TYPES = ["direct_statement"];
+const ACCEPTABLE_CONFIDENCE = ["high"];
+const SKIP_FIELDS = ["service_history", "operational_context"]; // complex objects, not reliable for R1-C.1B
+
+function mapDiscoveryValue(field: string, value: string): any {
+  if (field === "years_served" || field === "user_confidence") {
+    const num = parseFloat(value);
+    return isNaN(num) ? value : num;
+  }
+  return value;
+}
+
+function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; rejected: any[] } {
+  const accepted: any = {};
+  const rejected: any[] = [];
+  const goalsList: string[] = [];
+
+  for (const d of discoveries) {
+    // Skip complex fields
+    if (SKIP_FIELDS.includes(d.field)) {
+      rejected.push({ field: d.field, value: d.value, reason: "COMPLEX_FIELD_SKIPPED" });
+      continue;
+    }
+
+    // Deterministic gate: only direct_statement + high confidence
+    if (!ACCEPTABLE_SOURCE_TYPES.includes(d.source_type)) {
+      rejected.push({ field: d.field, value: d.value, reason: "SOURCE_TYPE_NOT_DIRECT_STATEMENT" });
+      continue;
+    }
+    if (!ACCEPTABLE_CONFIDENCE.includes(d.confidence)) {
+      rejected.push({ field: d.field, value: d.value, reason: "CONFIDENCE_NOT_HIGH" });
+      continue;
+    }
+
+    const mappedValue = mapDiscoveryValue(d.field, d.value);
+
+    // Goals are collected into an array
+    if (d.field === "goals") {
+      goalsList.push(d.value);
+    } else {
+      accepted[d.field] = mappedValue;
+    }
+  }
+
+  if (goalsList.length > 0) {
+    accepted.goals = goalsList;
+  }
+
+  return { new_discoveries: accepted, rejected };
+}
+
+// --- user_response_type downgrade ---
+// EXPLORING-origin interaction may reach CONFIRMING only.
+// It must never confirm in the same interaction.
+// confirming/rejecting → downgraded to answering.
+
+function safeUserResponseType(raw: string): { safe: string; downgraded: boolean } {
+  if (raw === "confirming" || raw === "rejecting") {
+    return { safe: "answering", downgraded: true };
+  }
+  return { safe: raw || "answering", downgraded: false };
 }
 
 Deno.serve(async (req) => {
@@ -63,12 +123,11 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json();
     const user_message = body.user_message || "";
-    const conversation_context = body.conversation_context || [];
 
     const base44 = createClientFromRequest(req);
 
     // ==================================================
-    // 1. PROFILE CONTEXT ACQUISITION (production only — RLS-protected)
+    // 1. PROFILE CONTEXT ACQUISITION (production only, RLS-protected)
     // ==================================================
 
     const profiles = await base44.entities.UserProfile.list();
@@ -84,8 +143,6 @@ Deno.serve(async (req) => {
 
     const profile_id = profiles[0].id;
     let profile = profiles[0];
-
-    // Deserialize profile (canonical adapter pattern)
     profile = deserializeProfile(profile);
 
     // ==================================================
@@ -95,14 +152,10 @@ Deno.serve(async (req) => {
     const tos_phase = profile.tos_phase || "UNKNOWN";
 
     // ==================================================
-    // 3. PHASE ROUTING
+    // 3. PHASE ROUTING — EXPLORING ONLY
     // ==================================================
 
-    // R1-C.1A: ONLY EXPLORING and CONFIRMING are implemented
-    const implemented_phases = ["EXPLORING", "CONFIRMING"];
-
-    if (!implemented_phases.includes(tos_phase)) {
-      // Safe fallback for all other phases
+    if (tos_phase !== "EXPLORING") {
       return new Response(JSON.stringify({
         success: true,
         response_text: "I'm still learning how to help with this stage of your journey. Your dashboard has more information about where things stand.",
@@ -113,7 +166,7 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
-    // 4. BUILD BOUNDED PROFILE CONTEXT (for LLM)
+    // 4. BUILD BOUNDED PROFILE CONTEXT
     // ==================================================
 
     const operational_areas = [
@@ -216,38 +269,51 @@ Deno.serve(async (req) => {
     if (!interpretation || typeof interpretation !== "object") {
       return new Response(JSON.stringify({
         success: false,
-        error: "LLM_INTERPRETATION_FAILED",
-        response_text: "I'm having trouble processing that right now. Could you try again?",
         tos_phase: tos_phase,
-        state_changed: false
+        state_changed: false,
+        clarification_needed: null,
+        candidate_discoveries_count: 0,
+        accepted_discoveries_count: 0,
+        companion_result: null,
+        recoverable_error: "LLM_INTERPRETATION_FAILED",
+        orchestration_note: "INTERPRETATION_INVALID"
       }), { headers: cors });
     }
 
     // ==================================================
-    // 7. SAFETY CHECK
+    // 7. SAFETY CHECK — stop all orchestration
     // ==================================================
 
     if (interpretation.safety_flag === true) {
       return new Response(JSON.stringify({
         success: true,
-        response_text: "I'm here. That sounds really difficult. You don't have to face this alone. Samaritans is available 24/7 on 116 123, and NHS 111 can help too. Would you like to tell me more about what's going on?",
         tos_phase: tos_phase,
         state_changed: false,
-        ui_cue: null
+        clarification_needed: null,
+        candidate_discoveries_count: 0,
+        accepted_discoveries_count: 0,
+        companion_result: null,
+        recoverable_error: null,
+        orchestration_note: "SAFETY_PATH_NO_ENGINE_CALL",
+        safety_response: "I'm here. That sounds really difficult. You don't have to face this alone. Samaritans is available 24/7 on 116 123, and NHS 111 can help too."
       }), { headers: cors });
     }
 
     // ==================================================
-    // 8. AMBIGUITY CHECK
+    // 8. AMBIGUITY CHECK — no persistence if ambiguous
     // ==================================================
 
-    if (interpretation.ambiguity_flag === true && interpretation.clarification_needed) {
+    if (interpretation.ambiguity_flag === true) {
       return new Response(JSON.stringify({
         success: true,
-        response_text: "[R1-C.1A] Ambiguous - clarification needed: " + interpretation.clarification_needed,
         tos_phase: tos_phase,
         state_changed: false,
-        orchestration_note: "AMBIGUOUS_INTERPRETATION",
+        clarification_needed: interpretation.clarification_needed || "Could you tell me a bit more about that?",
+        candidate_discoveries_count: (interpretation.candidate_discoveries || []).length,
+        accepted_discoveries_count: 0,
+        companion_result: null,
+        recoverable_error: null,
+        orchestration_note: "AMBIGUOUS_NO_PERSISTENCE",
         _internal: {
           interpretation,
           profile_context
@@ -256,49 +322,204 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
-    // 9. R1-C.1A FOUNDATION RESPONSE
+    // 9. DETERMINISTIC VALIDATION GATE
     // ==================================================
 
-    // R1-C.1A: Return interpretation result WITHOUT calling any engine
-    // No companionService call. No profile mutation. No response generation.
+    const allDiscoveries = interpretation.candidate_discoveries || [];
+    const { new_discoveries, rejected } = buildNewDiscoveries(allDiscoveries);
 
-    const discoveries = interpretation.candidate_discoveries || [];
-    const discovery_count = discoveries.length;
-    const direct_count = discoveries.filter((d: any) => d.source_type === "direct_statement").length;
-    const uncertain_count = discoveries.filter((d: any) => d.source_type === "uncertain").length;
-    const interpreted_count = discoveries.filter((d: any) => d.source_type === "reasonable_interpretation").length;
+    // Check if ANY discovery was reasonable_interpretation or uncertain
+    const hasNonDirect = allDiscoveries.some((d: any) =>
+      d.source_type === "reasonable_interpretation" || d.source_type === "uncertain");
+
+    // If there are non-direct discoveries, return clarification (do not persist ANY)
+    if (hasNonDirect && Object.keys(new_discoveries).length === 0) {
+      return new Response(JSON.stringify({
+        success: true,
+        tos_phase: tos_phase,
+        state_changed: false,
+        clarification_needed: "I want to make sure I understand correctly. Could you tell me a bit more about that?",
+        candidate_discoveries_count: allDiscoveries.length,
+        accepted_discoveries_count: 0,
+        rejected_discoveries: rejected,
+        companion_result: null,
+        recoverable_error: null,
+        orchestration_note: "TENTATIVE_LANGUAGE_NO_PERSISTENCE",
+        _internal: {
+          interpretation,
+          profile_context,
+          validation_decisions: { gate: "DIRECT_STATEMENT_HIGH_CONFIDENCE_ONLY", result: "ALL_REJECTED" }
+        }
+      }), { headers: cors });
+    }
+
+    // If there are non-direct discoveries mixed with direct, still return clarification
+    // (directive: "REASONABLE_INTERPRETATION → DO NOT persist automatically")
+    if (hasNonDirect) {
+      return new Response(JSON.stringify({
+        success: true,
+        tos_phase: tos_phase,
+        state_changed: false,
+        clarification_needed: "Some of what you've said is clear, but I want to understand the rest better. Could you tell me more?",
+        candidate_discoveries_count: allDiscoveries.length,
+        accepted_discoveries_count: 0,
+        rejected_discoveries: rejected,
+        companion_result: null,
+        recoverable_error: null,
+        orchestration_note: "MIXED_DIRECT_AND_TENTATIVE_NO_PERSISTENCE",
+        _internal: {
+          interpretation,
+          profile_context,
+          validation_decisions: { gate: "DIRECT_STATEMENT_HIGH_CONFIDENCE_ONLY", result: "MIXED_REJECTED" }
+        }
+      }), { headers: cors });
+    }
+
+    // If no discoveries at all, return without calling companionService
+    if (allDiscoveries.length === 0) {
+      return new Response(JSON.stringify({
+        success: true,
+        tos_phase: tos_phase,
+        state_changed: false,
+        clarification_needed: null,
+        candidate_discoveries_count: 0,
+        accepted_discoveries_count: 0,
+        companion_result: null,
+        recoverable_error: null,
+        orchestration_note: "NO_DISCOVERIES",
+        _internal: {
+          interpretation,
+          profile_context
+        }
+      }), { headers: cors });
+    }
+
+    // ==================================================
+    // 10. USER_RESPONSE_TYPE DOWNGRADE
+    // ==================================================
+
+    const rawResponseType = interpretation.user_response_type || "answering";
+    const { safe: safeResponseType, downgraded } = safeUserResponseType(rawResponseType);
+
+    // ==================================================
+    // 11. COMPANIONSERVICE CALL
+    // ==================================================
+
+    // Call companionService via SDK (handles auth automatically per Base44 docs)
+    let companionResult: any = null;
+    let companionError: string | null = null;
+
+    try {
+      const companionPayload = {
+        profile_id: profile_id,
+        current_mode: "EXPLORING",
+        new_discoveries: new_discoveries,
+        user_response_type: safeResponseType
+      };
+
+      // Try SDK function invoke first (handles auth automatically)
+      if (typeof (base44 as any).functions?.invoke === "function") {
+        companionResult = await (base44 as any).functions.invoke("companionService", companionPayload);
+      } else {
+        // Fallback: HTTP call via app domain
+        const apiUrl = req.headers.get("base44-api-url") || "https://app.base44.com";
+        const appId = req.headers.get("base44-app-id") || "";
+        const companionUrl = apiUrl + "/api/apps/" + appId + "/functions/companionService";
+        const fetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+        if (authHeader) fetchHeaders["Authorization"] = authHeader;
+        const serviceAuth = req.headers.get("base44-service-authorization");
+        if (serviceAuth) fetchHeaders["base44-service-authorization"] = serviceAuth;
+        fetchHeaders["base44-api-url"] = apiUrl;
+        if (appId) fetchHeaders["base44-app-id"] = appId;
+        const companionResponse = await fetch(companionUrl, {
+          method: "POST",
+          headers: fetchHeaders,
+          body: JSON.stringify(companionPayload)
+        });
+        if (!companionResponse.ok) {
+          companionError = "COMPANION_SERVICE_HTTP_ERROR_" + companionResponse.status;
+        } else {
+          companionResult = await companionResponse.json();
+        }
+      }
+    } catch (invokeError) {
+      companionError = "COMPANION_INVOKE_FAILED: " + (invokeError as Error).message;
+    }
+
+    // ==================================================
+    // 12. BUILD RESPONSE
+    // ==================================================
+
+    if (companionError) {
+      return new Response(JSON.stringify({
+        success: false,
+        tos_phase: tos_phase,
+        state_changed: false,
+        clarification_needed: null,
+        candidate_discoveries_count: allDiscoveries.length,
+        accepted_discoveries_count: Object.keys(new_discoveries).length,
+        companion_result: null,
+        recoverable_error: companionError,
+        orchestration_note: "COMPANION_SERVICE_FAILED",
+        _internal: {
+          validation_decisions: { gate: "DIRECT_STATEMENT_HIGH_CONFIDENCE_ONLY", accepted_fields: Object.keys(new_discoveries) },
+          raw_user_response_type: rawResponseType,
+          response_type_downgraded: downgraded,
+          safe_user_response_type: safeResponseType
+        }
+      }), { headers: cors });
+    }
+
+    // Extract state change info from companion result
+    const companionPhase = companionResult?.profile?.tos_phase || tos_phase;
+    const stateChanged = companionPhase !== tos_phase;
 
     return new Response(JSON.stringify({
       success: true,
-      response_text: "[R1-C.1A FOUNDATION] Interpretation complete. " + discovery_count + " candidate discoveries (" + direct_count + " direct, " + interpreted_count + " interpreted, " + uncertain_count + " uncertain). Intent: " + interpretation.intent + ". Response type: " + interpretation.user_response_type + ". No engine called. No profile mutation.",
-      tos_phase: tos_phase,
-      state_changed: false,
-      orchestration_note: "R1-C.1A_FOUNDATION_ONLY",
+      tos_phase: companionPhase,
+      state_changed: stateChanged,
+      clarification_needed: null,
+      candidate_discoveries_count: allDiscoveries.length,
+      accepted_discoveries_count: Object.keys(new_discoveries).length,
+      rejected_discoveries: rejected,
+      companion_result: {
+        session: companionResult?.session || null,
+        engine_result: companionResult?.engine_result || null,
+        areas_with_substance: companionResult?.flow_guidance?.areas_with_substance || [],
+        areas_missing: companionResult?.flow_guidance?.areas_missing || [],
+        ready_for_confirmation: companionResult?.engine_result?.ready_for_confirmation || false,
+        lifecycle_transition: stateChanged ? (tos_phase + " → " + companionPhase) : null
+      },
+      recoverable_error: null,
+      orchestration_note: "R1-C.1B_COMPANIONSERVICE_CALLED",
       _internal: {
         interpretation,
         profile_context,
-        discovery_summary: {
-          total: discovery_count,
-          direct_statement: direct_count,
-          reasonable_interpretation: interpreted_count,
-          uncertain: uncertain_count,
-          intent: interpretation.intent,
-          user_response_type: interpretation.user_response_type,
-          interpretation_confidence: interpretation.interpretation_confidence,
-          ambiguity_flag: interpretation.ambiguity_flag,
-          safety_flag: interpretation.safety_flag
-        }
+        validation_decisions: {
+          gate: "DIRECT_STATEMENT_HIGH_CONFIDENCE_ONLY",
+          accepted_fields: Object.keys(new_discoveries),
+          rejected: rejected
+        },
+        raw_user_response_type: rawResponseType,
+        response_type_downgraded: downgraded,
+        safe_user_response_type: safeResponseType,
+        companion_service_method: typeof (base44 as any).functions?.invoke === "function" ? "SDK_INVOKE" : "HTTP_FETCH"
       }
     }), { headers: cors });
 
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
-      error: "ORCHESTRATOR_ERROR",
-      response_text: "I'm having trouble connecting right now. Please try again in a moment.",
       tos_phase: null,
       state_changed: false,
-      _internal: { error_message: error.message, error_stack: error.stack ? error.stack.slice(0, 500) : null }
+      clarification_needed: null,
+      candidate_discoveries_count: 0,
+      accepted_discoveries_count: 0,
+      companion_result: null,
+      recoverable_error: "ORCHESTRATOR_ERROR",
+      orchestration_note: "EXCEPTION",
+      _internal: { error_message: error.message }
     }), { status: 500, headers: cors });
   }
 });
