@@ -22,11 +22,17 @@ export function parseJSON(value: any, fallback: any = undefined): any {
   try { return JSON.parse(value); } catch { return fallback !== undefined ? fallback : value; }
 }
 
+// R1-C.1C-F: Numeric-to-string coercion for schema fields that require string persistence.
+// The Base44 SDK rejects numeric values for fields stored as strings (user_confidence, years_served).
+const STRING_PERSIST_FIELDS = new Set(["user_confidence", "years_served"]);
+
 export function serializeForPersistence(data: any): any {
   const result = { ...data };
   for (const [key, value] of Object.entries(result)) {
-    if (value !== null && value !== undefined && typeof value === 'object') {
+    if (value !== null && value !== undefined && typeof value === "object") {
       result[key] = JSON.stringify(value);
+    } else if (STRING_PERSIST_FIELDS.has(key) && typeof value === "number") {
+      result[key] = String(value);
     }
   }
   return result;
