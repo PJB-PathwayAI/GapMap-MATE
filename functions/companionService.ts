@@ -1,5 +1,5 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
-import { companionCore, deserializeProfile, COMPANION_CORE_VERSION } from '../../shared/companionCore.ts';
+import { companionCore, deserializeProfile, COMPANION_CORE_VERSION } from '../shared/companionCore.ts';
 
 // ============================================================
 // companionService — Thin Wrapper (R1-C.1B-E1)

@@ -20,7 +20,7 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
  *   3. Calculate Capability Confidence per capability (evidence-based, not optimism-based)
  *   4. Persist results to UserProfile (capability_map, confidence_scores)
  *   5. Generate structured Capability Picture for Smudge to present
- *   6. Gate phase advancement: Understand → Evaluate
+ *   6. Gate phase advancement: CONFIRMED → EVALUATING
  *
  * What this engine does NOT do:
  *   - Identify capabilities from free text (that's Smudge/the LLM layer)
@@ -248,7 +248,7 @@ Deno.serve(async (req) => {
       action,
       profile_id,
       capabilities,        // CapabilitySubmission[] for submit_capabilities
-      advance_phase         // boolean: transition tos_phase to "Evaluate"
+      advance_phase         // boolean: transition tos_phase to "EVALUATING"
     } = body;
 
     if (!profile_id) {
@@ -259,7 +259,8 @@ Deno.serve(async (req) => {
       return Response.json({ error: "Missing action. Valid actions: validate_preconditions, seed_evidence, submit_capabilities, get_capability_picture, advance_phase" }, { status: 400 });
     }
 
-    const existing = await base44.asServiceRole.entities.UserProfile.get(profile_id);
+    // Ownership validation: user-scoped read (RLS-enforced) — S-004
+    const existing = await base44.entities.UserProfile.get(profile_id);
     if (!existing) {
       return Response.json({ error: "Profile not found" }, { status: 404 });
     }
@@ -315,6 +316,19 @@ Deno.serve(async (req) => {
         error: 'Preconditions not met. Capability evaluation cannot proceed.',
         preconditions,
         message: `Resolve: ${preconditions.failures.join('; ')}`
+      }, { status: 403 });
+    }
+
+    // Packet 2E: Lifecycle guard — capability work only from CONFIRMED or EVALUATING
+    // Prevents backward transition from READY_TO_ACT, IN_TRANSITION, SETTLED (NF-3)
+    // 'Evaluate' accepted for backward compatibility with PROOF-era profiles
+    if ((action === 'submit_capabilities' || action === 'advance_phase')
+        && existing.tos_phase !== 'CONFIRMED'
+        && existing.tos_phase !== 'EVALUATING'
+        && existing.tos_phase !== 'Evaluate') {
+      return Response.json({
+        error: `Cannot ${action} from phase ${existing.tos_phase}. Capability work requires CONFIRMED or EVALUATING.`,
+        current_phase: existing.tos_phase
       }, { status: 403 });
     }
 
@@ -428,7 +442,7 @@ Deno.serve(async (req) => {
       await base44.asServiceRole.entities.UserProfile.update(profile_id, {
         capability_map: mergedCapMap,
         confidence_scores: mergedConfidence,
-        tos_phase: 'Evaluate'
+        tos_phase: 'EVALUATING'
       });
 
       return Response.json({
@@ -436,7 +450,7 @@ Deno.serve(async (req) => {
         accepted,
         rejected,
         capability_picture: buildCapabilityPicture(accepted, existing),
-        profile_phase: 'Evaluate'
+        profile_phase: 'EVALUATING'
       });
     }
 
@@ -488,24 +502,24 @@ Deno.serve(async (req) => {
       const capMap = existing.capability_map || [];
       if (capMap.length === 0) {
         return Response.json({
-          error: 'Cannot advance to Evaluate — no capabilities have been evaluated yet.'
+          error: 'Cannot advance to EVALUATING — no capabilities have been evaluated yet.'
         }, { status: 422 });
       }
 
-      if (existing.tos_phase === 'Evaluate') {
+      if (existing.tos_phase === 'EVALUATING') {
         return Response.json({
-          message: 'Already in Evaluate phase.',
-          profile_phase: 'Evaluate'
+          message: 'Already in EVALUATING phase.',
+          profile_phase: 'EVALUATING'
         });
       }
 
       await base44.asServiceRole.entities.UserProfile.update(profile_id, {
-        tos_phase: 'Evaluate'
+        tos_phase: 'EVALUATING'
       });
 
       return Response.json({
-        message: 'Phase advanced to Evaluate.',
-        profile_phase: 'Evaluate',
+        message: 'Phase advanced to EVALUATING.',
+        profile_phase: 'EVALUATING',
         capability_count: capMap.length
       });
     }

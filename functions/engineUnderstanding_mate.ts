@@ -68,21 +68,6 @@ function hasArraySubstance(arr: any[] | null | undefined, minCount: number = 1):
 
 // ─── Six Operational Area validators ───
 
-// ─── Serialization Adapter (required for SDK JSON string fields) ───
-function parseJSON(value: any, fallback: any = undefined): any {
-  if (value === null || value === undefined) return fallback;
-  if (typeof value !== 'string') return value;
-  try { return JSON.parse(value); } catch { return fallback !== undefined ? fallback : value; }
-}
-
-function deserializeProfile(profile: any): any {
-  const arrayFields = ['service_history', 'goals', 'operational_context', 'evidence_log', 'capability_map', 'confidence_scores', 'recommended_pathways', 'safety_flags', 'operational_picture_history', 'milestones'];
-  const objectFields = ['assessment_confidence', 'decision_factors', 'soak_period', 'communication_preferences'];
-  for (const f of arrayFields) { profile[f] = parseJSON(profile[f], []); }
-  for (const f of objectFields) { profile[f] = parseJSON(profile[f]); }
-  return profile;
-}
-
 interface AreaAssessment {
   area: string;
   has_substance: boolean;
