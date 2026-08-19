@@ -1,6 +1,6 @@
 // ============================================================
 // companionCore — Shared Companion Domain Logic
-// R1-C.1B-E1: Extracted from companionService v1.2
+// R1-C.1B-E2R: Lifecycle regression fix (v1.1.0)
 //
 // ONE deterministic Understanding implementation.
 // TWO authenticated entry points (companionService + smudgeOrchestrator).
@@ -12,7 +12,7 @@
 // Persistence is performed via a narrow capability callback supplied by the wrapper.
 // ============================================================
 
-export const COMPANION_CORE_VERSION = "1.0.0";
+export const COMPANION_CORE_VERSION = "1.1.0";
 
 // ─── Serialization Adapters ───
 
@@ -187,7 +187,7 @@ function generateFlowGuidance(
   if (missing.length > 0 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
     notes.push(`Still exploring — ${missing.length} area(s) need substance before reflecting.`);
     if (nextArea) {
-      notes.push(`Suggested next area: "${nextArea}". This is a suggestion, not a script — if the user naturally covers another area, follow them.`);
+      notes.push(`Suggested next area: "${nextArea}". This is a suggestion, not a script — if the user naturally covers another area, move with them.`);
     }
   }
 
@@ -206,18 +206,15 @@ function generateFlowGuidance(
   }
 
   if (withSubstance.length >= 2 && withSubstance.length < 6 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
-    notes.push(`MILESTONE: ${withSubstance.length} areas now have substance. If a natural moment arises (user links two themes, or pauses), a brief milestone reflection is appropriate — but keep it short. Don't reflect after every answer.`);
+    notes.push(`MILESTONE: ${withSubstance.length} areas now have substance. If a natural moment arises, offer a brief reflection of what you understand so far. Don't force it.`);
   }
 
-  if (readyToReflect) {
-    notes.push("All six areas have substance. Time to reflect the picture back — in the user's own language, not a data dump.");
+  if (allSix && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
     notes.push("Reflect what you genuinely understand, not just what's stored. If something feels thin even though it has 'substance', say so honestly.");
-    notes.push("Use everyday military language in the reflection. Civilian translation comes later at the Capability Picture stage.");
   }
 
   if (mode === 'CONFIRMING') {
-    notes.push('Inviting confirmation — frame it as "does this sound like you?" not "please confirm your data."');
-    notes.push("If the user corrects something, that's good — they're engaged. Go back and explore the gap, don't treat it as a failure.");
+    notes.push("The operational picture has been presented. Await the user's explicit confirmation before proceeding. If they correct or add, return to exploring.");
   }
 
   if (mode === 'CONFIRMED') {
@@ -225,12 +222,11 @@ function generateFlowGuidance(
   }
 
   if (profile.user_confidence !== null && profile.user_confidence < 4 && mode !== 'CONFIRMED') {
-    notes.push(`User confidence is low (${profile.user_confidence}/10). Be steady — don't rush toward solutions. The picture matters more than the pace.`);
-    notes.push("If the user signals boredom or frustration ('where's this going'), don't push through. Either close the current topic with a checkpoint, or bring the reflection forward if enough areas have substance.");
+    notes.push('LOW CONFIDENCE FLAG: User self-reported confidence is below 4/10. Be extra careful not to push. Prioritise psychological safety over data collection.');
   }
 
   if (withSubstance.length >= 3 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
-    notes.push("MOMENTUM: Good progress — 3+ areas covered. Vary the conversation rhythm. Don't let every exchange become Q→Reflect→Q→Reflect. Use mini acknowledgements ('got you', 'makes sense') between questions. Reserve full reflections for milestones.");
+    notes.push('If the user signals they want to wrap up or move on, respect that. You can reflect what you have and ask if they want to continue or pause.');
   }
 
   return {
@@ -288,9 +284,11 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
       goals: newDiscoveries.goals?.length ? newDiscoveries.goals : profile.goals || [],
       operational_context: newDiscoveries.operational_context?.length ? newDiscoveries.operational_context : profile.operational_context || [],
       user_confidence: newDiscoveries.user_confidence !== undefined ? newDiscoveries.user_confidence : profile.user_confidence,
+      // R1-C.1B-E2R FIX: Confirmation guard — operational_picture_confirmed can only be set true
+      // when the profile is ALREADY in CONFIRMING. Prevents EXPLORING-origin confirmation.
       operational_picture_confirmed: userResponseType === 'rejecting'
         ? false
-        : (userResponseType === 'confirming' ? true : (profile.operational_picture_confirmed ?? false)),
+        : (userResponseType === 'confirming' && profile.tos_phase === 'CONFIRMING' ? true : (profile.operational_picture_confirmed ?? false)),
     };
 
     const areas = assessAreas(merged);
@@ -299,11 +297,18 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
     const minUnderstanding = ['Who are you?', 'What have you done?', 'Where are you now?', 'Where are you going?']
       .every(name => areas.find(a => a.area === name)!.has_substance);
 
+    // R1-C.1B-E2R FIX: Canonical lifecycle terminology (EXPLORING/CONFIRMING, not Discover/Understand)
     let newPhase = profile.tos_phase;
-    if (minUnderstanding && profile.tos_phase === 'Discover') newPhase = 'Understand';
+    if (minUnderstanding && profile.tos_phase === 'EXPLORING') newPhase = 'CONFIRMING';
 
     const userConfirmed = merged.operational_picture_confirmed === true;
     const readyForConfirmation = allCoreSubstantive && understandingSubstantive;
+
+    // R1-C.1B-E2R FIX: CONFIRMING → CONFIRMED transition with explicit guard.
+    // Profile must ALREADY be in CONFIRMING. EXPLORING-origin cannot reach CONFIRMED.
+    if (userResponseType === 'confirming' && userConfirmed && readyForConfirmation && profile.tos_phase === 'CONFIRMING') {
+      newPhase = 'CONFIRMED';
+    }
 
     const confidence = calcConfidence(areas, userConfirmed);
 
@@ -339,7 +344,9 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
   let mode: ConversationMode = currentMode as ConversationMode;
 
   if (engineResult) {
-    if (userResponseType === 'confirming' && engineResult.can_proceed) {
+    // R1-C.1B-E2R FIX: CONFIRMED mode requires profile was ALREADY in CONFIRMING.
+    // EXPLORING-origin interaction MUST NOT reach CONFIRMED in the same call.
+    if (userResponseType === 'confirming' && engineResult.can_proceed && profile.tos_phase === 'CONFIRMING') {
       mode = 'CONFIRMED';
     } else if (userResponseType === 'rejecting' || userResponseType === 'correcting') {
       mode = 'RE_EXPLORING';
