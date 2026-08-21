@@ -313,7 +313,7 @@ async function safetyClassificationCall(base44: any, userMessage: string, safety
   const contextStr = buildSafetyContext(profile, recentContext);
   const prompt = `You are Smudge, a companion for military service leavers.
 
-The user previously said something that needed safety clarification: "${safetyFlags.trigger_phrase || ""}"
+The user previously said something that was flagged for safety: "${safetyFlags.trigger_phrase || ""}"
 
 Context at the time: ${safetyFlags.trigger_context || "No additional context available."}
 
@@ -321,7 +321,7 @@ The user has now responded: "${userMessage}"
 
 Classify this response:
 - "benign": The user has established that their original statement was not about self-harm or crisis. They meant something everyday (ending a shift, calling it a day, etc.). Generate a natural, brief acknowledgment. Do not make it dramatic — they were never in crisis.
-- "concern": The user's response confirms or maintains genuine concern about their wellbeing. They are in distress or crisis. Do NOT generate a response — the system will handle this with a safety pathway.
+- "concern": The user's response confirms or maintains genuine crisis intent or self-harm risk. Anger, frustration, profanity, hostility, or self-deprecating language WITHOUT expressed self-harm intent is NOT concern — classify as "benign" if the user is clearly angry or frustrated but not in crisis. If genuine uncertainty remains between anger/frustration and safety risk, classify as "ambiguous". Do NOT generate a response — the system will handle this with a safety pathway.
 - "ambiguous": The meaning is still genuinely unclear. Generate a short, natural clarification. Do NOT diagnose, dramatise, or put suicidal intent into the user's mouth. Mirror their own words. Example: "When you say 'ending it', what do you mean, mate?"
 
 Conservative backstop: when uncertainty cannot safely be resolved, classify as "ambiguous". Safety wins.
@@ -428,7 +428,7 @@ Deno.serve(async (req) => {
     const isSafetyPending = safetyFlagsRaw &&
       typeof safetyFlagsRaw === "object" &&
       !Array.isArray(safetyFlagsRaw) &&
-      safetyFlagsRaw.safety_clarification_pending === true;
+      (safetyFlagsRaw.safety_clarification_pending === true || safetyFlagsRaw.safety_concern_pending === true);
 
     if (isSafetyPending) {
       let safetyResult: { classification: string; response_text: string };
@@ -575,9 +575,10 @@ Deno.serve(async (req) => {
       "- Safety classification (see below)\n\n" +
       "SAFETY CLASSIFICATION — consider the current phrase, any preceding conversation context provided above, and the current exchange. Do NOT classify based solely on isolated keywords if context clearly establishes a benign meaning.\n" +
       "  - \"none\": The message is clearly benign in context. Normal conversation should continue.\n" +
-      "  - \"clear_concern\": Sufficient evidence of genuine concern (distress, crisis, self-harm). Safety pathway should activate.\n" +
+      "  - \"clear_concern\": Clear evidence of crisis intent or self-harm risk. Anger, frustration, profanity, hostility, or self-deprecating language WITHOUT expressed self-harm intent is NOT clear_concern — classify as \"none\" if context shows the user is angry or frustrated (even with profanity). If genuine uncertainty remains between anger/frustration and safety risk, classify as \"ambiguous\", not \"none\".\n" +
       "  - \"ambiguous\": Meaning cannot safely be established from current phrase and context. Clarification is needed.\n" +
-      "Example: \"I've had enough, I'm calling it a day\" after discussing a difficult shift = \"none\". Same phrase after discussing overwhelming stress = may be \"ambiguous\" or \"clear_concern\" depending on context.";
+      "Example: \"I've had enough, I'm calling it a day\" after discussing a difficult shift = \"none\". Same phrase after discussing overwhelming stress = may be \"ambiguous\" or \"clear_concern\" depending on context.\n" +
+      "Military-context examples: \"i have just told you im a pissed head drunk bastard\" after repetitive questions = \"none\" (anger and self-deprecation, not crisis). \"what you saying im fucking lazy you cunt\" = \"none\" (hostility with profanity, not self-harm). \"wtf is right im out this is shit\" = \"none\" (frustration, not crisis). \"I can't take this anymore, I want it to end\" after discussing feeling trapped = \"ambiguous\" or \"clear_concern\" depending on context.";
 
     const interpretSchema = {
       type: "object",
@@ -629,6 +630,15 @@ Deno.serve(async (req) => {
     const safetyClassification = interpretation.safety_classification || "none";
 
     if (safetyClassification === "clear_concern") {
+      // R1-C.1D-SAFETY: Write recovery state so next turn evaluates, not re-triggers
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, {
+        safety_flags: JSON.stringify({
+          safety_concern_pending: true,
+          trigger_phrase: user_message,
+          trigger_context: buildSafetyContext(profile, recent_context)
+        })
+      });
+
       return new Response(JSON.stringify({
         success: true,
         response_text: "I'm here. That sounds really difficult. You don't have to face this alone. Samaritans is available 24/7 on 116 123, and NHS 111 can help too.",
@@ -638,7 +648,7 @@ Deno.serve(async (req) => {
         companion_result: null, recoverable_error: null,
         orchestration_note: "SAFETY_PATH_NO_ENGINE_CALL",
         companion_core_version: COMPANION_CORE_VERSION,
-        _internal: { safety_flow: "CLEAR_CONCERN", safety_pending: false }
+        _internal: { safety_flow: "CLEAR_CONCERN", safety_pending: true }
       }), { headers: cors });
     }
 
