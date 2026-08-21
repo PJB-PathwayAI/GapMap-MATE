@@ -2,23 +2,20 @@ import { createClientFromRequest } from "npm:@base44/sdk@0.8.31";
 import { companionCore, deserializeProfile, COMPANION_CORE_VERSION } from "../shared/companionCore.ts";
 
 // ============================================================
-// smudgeOrchestrator — R1-C.1D (generation layer aligned with CBR v1.0)
+// smudgeOrchestrator — R1-C.1D-G1 (SMUDGE MVP Correction Packet Group 1)
 //
 // SCOPE: EXPLORING + CONFIRMING
-// Domain processing: companionCore (shared module v1.1.0)
+// Domain processing: companionCore (shared module v1.1.0 — unchanged)
 //
-// PROVES:
-//   1. user expression → LLM interpretation → deterministic validation
-//   2. Validated discoveries → companionCore → authorised persistence
-//   3. Orchestrator never writes UserProfile directly
-//   4. Orchestrator never writes tos_phase
-//   5. Lifecycle transitions owned by companionCore
-//   6. companionCore version reported
-//   7. Response generation via second LLM call (or deterministic fallback)
-//   8. CONFIRMING phase support (lifecycle-aware response type handling)
+// CORRECTIONS APPLIED:
+//   1. Identity Integrity (P0) — strengthened Rule 10 + post-gen validation
+//   3. Grounded Understanding (P0) — profile content + evidence state to gen
+//   4. Orientation Before Exploration (P1) — orientation context in prompt
+//   5. Conductor Behaviour (P1) — reframed context + act variety rules
+//   6. Language Variety (P1) — anti-repetition rule
+//   7. Profile Bootstrap (P1) — auto-create on NO_PROFILE
 //
-// R1-C.1C-CM: Reconciled from deployed bundle to match production behaviour.
-// Previous repo version was R1-C.1B-E2 (EXPLORING only, no generation).
+// FROZEN: companionCore, lifecycle, persistence, engines, entity schemas
 // ============================================================
 
 // --- Substance threshold (for profile context building only) ---
@@ -77,13 +74,59 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
 }
 
 // --- user_response_type downgrade (lifecycle-aware) ---
-// In EXPLORING: confirming/rejecting downgraded to "answering"
-// In CONFIRMING: confirming/rejecting are valid response types
 function safeUserResponseType(raw: string, mode: string): { safe: string; downgraded: boolean } {
   if (mode !== "CONFIRMING" && (raw === "confirming" || raw === "rejecting")) {
     return { safe: "answering", downgraded: true };
   }
   return { safe: raw || "answering", downgraded: false };
+}
+
+// --- CORRECTION 3: Build profile content summary for generation context ---
+function buildProfileContext(profile: any): string {
+  const parts: string[] = [];
+  if (isSubstantive(profile.service_branch)) parts.push(`- Service: ${profile.service_branch}`);
+  if (isSubstantive(profile.rank)) parts.push(`- Rank: ${profile.rank}`);
+  if (profile.years_served !== null && profile.years_served !== undefined) parts.push(`- Years served: ${profile.years_served}`);
+  if (isSubstantive(profile.professional_identity)) parts.push(`- Professional identity: ${profile.professional_identity}`);
+  if (isSubstantive(profile.personal_context)) parts.push(`- Current circumstances: ${profile.personal_context}`);
+  if (Array.isArray(profile.goals) && profile.goals.length > 0) parts.push(`- Goals: ${profile.goals.join("; ")}`);
+  if (profile.user_confidence !== null && profile.user_confidence !== undefined) parts.push(`- Self-reported confidence: ${profile.user_confidence}/10`);
+  return parts.length > 0 ? parts.join("\n") : "- No profile content yet — you are still getting to know this person.";
+}
+
+// --- CORRECTION 1: Post-generation validation patterns ---
+const IDENTITY_VIOLATION_PATTERNS = [
+  /\bI served\b/i,
+  /\bI was in (the )?(army|navy|raf|marines|royal)\b/i,
+  /\bI was in for\b/i,
+  /\bmy time in\b/i,
+  /\bwhen I was in\b/i,
+  /\bmy service\b/i,
+  /\bI deployed\b/i,
+  /\bI was (posted|based|stationed)\b/i,
+  /\bmy (regiment|battalion|squad|section|platoon|company)\b/i,
+  /\bI did .* tour/i,
+  /\bI was a (private|lance corporal|corporal|sergeant|staff sergeant|colour sergeant|warrant|officer|lieutenant|captain|major|colonel|general)\b/i
+];
+
+// --- CORRECTION 3: Ungrounded understanding claim patterns ---
+const UNGROUNDED_CLAIM_PATTERNS = [
+  /\bI'?ve got a (good|clear|decent|solid|great) picture\b/i,
+  /\bI understand your (transition|journey|situation)\b/i,
+  /\bI can see your (transition|journey|situation)\b/i,
+  /\bI'?ve got you (figured out|worked out|sussed)\b/i
+];
+
+function validateGeneration(text: string, evidenceSufficient: boolean): { valid: boolean; violation: "identity" | "grounding" | null } {
+  for (const pattern of IDENTITY_VIOLATION_PATTERNS) {
+    if (pattern.test(text)) return { valid: false, violation: "identity" };
+  }
+  if (!evidenceSufficient) {
+    for (const pattern of UNGROUNDED_CLAIM_PATTERNS) {
+      if (pattern.test(text)) return { valid: false, violation: "grounding" };
+    }
+  }
+  return { valid: true, violation: null };
 }
 
 // --- Generation helpers ---
@@ -107,12 +150,16 @@ function formatLifecycleTransition(t: string | null): string {
 
 function buildGenerationPrompt(ctx: any): string {
   const lines: string[] = [];
-  // R1-C.1D-BDI: System prompt — CBR §4 voice + Cipher cross-phase constraint
-  // Objective: behavioural judgement, not catchphrases. Examples calibrate voice only.
+  // R1-C.1D-G1: System prompt — CBR §4 voice + Cipher cross-phase constraint
+  // CORRECTION 4: Orientation content added
   lines.push("You are Smudge, a companion for people leaving the military.");
   lines.push("You are the same person in every conversation — warm, practical, unhurried.");
   lines.push("What you focus on changes depending on where the person is in their journey.");
   lines.push(`Right now they are in the ${ctx.canonical_phase} stage. Adapt your focus to match, but never change who you are.`);
+  lines.push("");
+  // CORRECTION 4: What MATE is and what Smudge does
+  lines.push("What MATE is: a companion service for people leaving the military. It helps them understand who they are outside the forces, what they're good at, and what their options might be. It's not a form, a test, or an interview — it's a conversation.");
+  lines.push("What your job is: to have real conversations. Listen, understand, and help the person see their own capability. You're not an advisor, an assessor, or a form-filler. You're a companion.");
   lines.push("");
   lines.push("You are having a conversation, not conducting an interview.");
   lines.push("You speak like a person, not a model — short sentences, everyday words, start with the point not the setup.");
@@ -125,9 +172,12 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("Here is what happened in this turn:");
   lines.push(`- What they shared that you understood and saved: ${formatAcceptedDiscoveries(ctx.accepted_discoveries)}`);
   lines.push(`- What you couldn't save (needed more clarity): ${formatRejectedDiscoveries(ctx.rejected_discoveries)}`);
-  lines.push(`- What you now understand about them: ${ctx.areas_explored.length > 0 ? ctx.areas_explored.join(", ") : "still building the picture"}`);
-  lines.push(`- What you still need to understand: ${ctx.areas_outstanding.length > 0 ? ctx.areas_outstanding.join(", ") : "nothing outstanding"}`);
-  lines.push(`- Whether understanding is complete: ${ctx.confirmed ? "yes, they confirmed it" : ctx.ready_to_confirm ? "ready to ask if they confirm" : "not yet"}`);
+  // CORRECTION 3: Actual profile content (not just labels)
+  lines.push(`- What you actually know about this person so far:`);
+  lines.push(ctx.profile_content);
+  // CORRECTION 5: Reframed from checklist to situational awareness
+  lines.push(`- Areas you haven't explored yet (for your awareness, not a checklist to work through): ${ctx.areas_outstanding.length > 0 ? ctx.areas_outstanding.join(", ") : "all areas explored"}`);
+  lines.push(`- Whether understanding is complete: ${ctx.confirmed ? "yes, they confirmed it" : ctx.ready_to_confirm ? "ready to ask if they confirm" : "not yet — still building"}`);
   lines.push(`- Stage change: ${formatLifecycleTransition(ctx.lifecycle_transition)}`);
   if (ctx.clarification_needed) lines.push(`- Clarification needed: ${ctx.clarification_needed}`);
   if (ctx.companion_error) lines.push("- Note: something went wrong on the backend. The user's information may not have been saved. Be honest about this.");
@@ -146,7 +196,8 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("7. If a stage changed, acknowledge the transition naturally. Do not announce it as a system event.");
   lines.push("8. If the user seems uncertain or hesitant, do not push. Let them go at their own pace.");
   lines.push("9. If something went wrong on the backend, be honest about it. Do not pretend everything is fine.");
-  lines.push("10. Do not pretend to have military experience. You are a companion, not a veteran.");
+  // CORRECTION 1: Strengthened identity rule
+  lines.push("10. You have NEVER served in the military. You are NOT a veteran. You do NOT have military experience, personal service history, or lived experience of the forces. If asked about your own background, say you're a companion who helps service leavers — nothing more. Never fabricate military biography, rank, regiment, or deployment history.");
   // R1-C.1D-BDI: CBR-mapped generation rules (rules 11-17)
   lines.push("11. Use mini acknowledgements between answers — \"Got you\", \"Makes sense\", \"Right\" — not full reflections. Save reflections for milestones: a significant personal disclosure, connecting two themes the user hasn't linked, or before transitioning to a new area. Do not reflect after every answer.");
   lines.push("12. If the behavioural guidance says an area has reached substance, move toward closure. Use a checkpoint like \"I think I've got a good picture of that now — anything else before we move on?\" Do not keep probing the same area. If the user signals boredom or frustration, close the topic immediately.");
@@ -154,7 +205,18 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("14. Be curious, not a checklist. If the user naturally covers something you hadn't planned to ask, follow it. The suggested next area is a suggestion, not a script. Understanding is measured by quality, not quantity.");
   lines.push("15. Mirror the user's level of military language. If they say \"shell scrape,\" say \"shell scrape.\" If they say \"SOPs,\" say \"SOPs.\" Do not manufacture military slang or imply service experience. Authenticity follows the individual — it is not a military caricature.");
   lines.push("16. Do not manufacture emotional states or interpretations unsupported by what the user actually said. If they said they enjoy problem-solving, do not interpret that as everything feeling heavy. Stay grounded in their evidence.");
-  lines.push("17. If the user corrects you — \"I think you're putting too much weight on that\" — accept it, recalibrate, and move forward. Do not defend or reinterpret the original assumption.");
+  lines.push("17. If the user corrects you — \"I think you're putting too much weight on that\" — accept it, recalibrate, and move forward. Do not defend or reinterpret the original assumption. If you made an error about your own identity or claims, own it directly: \"I got that wrong\" — do not frame it as a misunderstanding.");
+  // R1-C.1D-G1: Correction rules (18-22)
+  // CORRECTION 3: Grounded understanding
+  lines.push("18. Do not claim to have a 'good picture', 'clear picture', or say 'I understand your transition' unless the evidence state explicitly says understanding is complete. If you are still building the picture, say so honestly. The profile content above is what you actually know — do not claim more than it contains.");
+  // CORRECTION 4: Orientation before exploration
+  lines.push("19. If the user asks what MATE is, what you do, or what this conversation is for — answer directly and plainly. Do not pivot to a discovery question. They need to understand what this is before they will share anything meaningful.");
+  // CORRECTION 5: Conductor behaviour
+  lines.push("20. Do not default to acknowledgement + question every turn. You can: acknowledge briefly, explain something, reassure, close a topic, change direction, pause and let them think, or simply respond to what they said. The 'areas you haven't explored' are for your awareness — they are not a checklist to work through sequentially. Decide what the conversation needs next, not what the next question should be. If the user says 'that covers it' or similar, move on — do not keep probing.");
+  // CORRECTION 5: Frustration changes approach
+  lines.push("21. If the user is frustrated, confused, or pushing back — stop exploring. Acknowledge their frustration directly. Change your approach. If they need orientation, give it. If they need space, give it. The conversation itself may have become the problem — fix that before continuing.");
+  // CORRECTION 6: Language variety
+  lines.push("22. Vary your acknowledgements. Do not use the same opening word or phrase more than twice in a row. Sometimes do not acknowledge at all — just respond to what they said. 'Got you', 'Makes sense', 'Right', 'Fair enough' — all fine, but not every time and not in sequence.");
   return lines.join("\n");
 }
 
@@ -202,20 +264,24 @@ Deno.serve(async (req) => {
     const base44 = createClientFromRequest(req);
 
     // ==================================================
-    // 1. PROFILE CONTEXT ACQUISITION (production only, RLS-protected)
+    // 1. PROFILE CONTEXT ACQUISITION
+    // CORRECTION 7: Auto-bootstrap if no profile exists
     // ==================================================
 
     const profiles = await base44.entities.UserProfile.list();
+    let profile_id: string;
+    let profile: any;
+
     if (profiles.length === 0) {
-      return new Response(JSON.stringify({
-        success: false, error: "NO_PROFILE",
-        response_text: "I don't have your profile set up yet. Please visit your dashboard to get started, then come back and we can talk.",
-        tos_phase: null, state_changed: false, companion_core_version: COMPANION_CORE_VERSION
-      }), { headers: cors });
+      // CORRECTION 7: Auto-create instead of "visit dashboard"
+      const newProfile = await base44.entities.UserProfile.create({ tos_phase: "EXPLORING", full_name: "" });
+      profile_id = newProfile.id;
+      profile = deserializeProfile(newProfile);
+    } else {
+      profile_id = profiles[0].id;
+      profile = deserializeProfile(profiles[0]);
     }
 
-    const profile_id = profiles[0].id;
-    const profile = deserializeProfile(profiles[0]);
     const currentPhase = profile.tos_phase || "EXPLORING";
 
     // ==================================================
@@ -225,26 +291,27 @@ Deno.serve(async (req) => {
     if (currentPhase !== "EXPLORING" && currentPhase !== "CONFIRMING") {
       return new Response(JSON.stringify({
         success: true,
-        response_text: "I'm still learning how to help with this stage of your journey. Your dashboard has more information about where things stand.",
+        response_text: "I'm still learning how to help with this stage of your journey. Your dashboard has more information about what's available.",
         response_intent: "ACKNOWLEDGE", asks_question: false,
         tos_phase: currentPhase, state_changed: false,
-        orchestration_note: "NOT_YET_IMPLEMENTED",
+        candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+        companion_result: null, recoverable_error: null,
+        orchestration_note: "PHASE_OUT_OF_SCOPE",
         companion_core_version: COMPANION_CORE_VERSION
       }), { headers: cors });
     }
 
     // ==================================================
-    // 3. BUILD BOUNDED PROFILE CONTEXT (for LLM)
+    // 3. BUILD OPERATIONAL AREAS SNAPSHOT
     // ==================================================
 
     const operational_areas = [
-      { key: "professional_identity", label: "professional identity" },
-      { key: "service_branch", label: "service branch" },
-      { key: "service_history", label: "service history" },
-      { key: "personal_context", label: "personal context" },
-      { key: "goals", label: "goals" },
-      { key: "operational_context", label: "current influences" },
-      { key: "user_confidence", label: "self-confidence" }
+      { key: "service_branch", label: "Who are you?" },
+      { key: "service_history", label: "What have you done?" },
+      { key: "personal_context", label: "Where are you now?" },
+      { key: "goals", label: "Where are you going?" },
+      { key: "operational_context", label: "What influences your journey?" },
+      { key: "user_confidence", label: "How well do we understand?" }
     ];
 
     const areas_explored: string[] = [];
@@ -294,7 +361,7 @@ Deno.serve(async (req) => {
           source_text: { type: "string", description: "The user's actual words that led to this extraction" },
           confidence: { type: "string", enum: ["high", "moderate", "low"] }
         }, required: ["field", "value", "source_type", "source_text", "confidence"] } },
-        intent: { type: "string", enum: ["answering", "correcting", "asking_question", "seeking_reassurance", "expressing_frustration", "sharing_milestone", "other"] },
+        intent: { type: "string", enum: ["answering", "correcting", "asking_question", "seeking_reassurance", "expressing_frustration", "sharing_milestone", "asking_orientation", "other"] },
         user_response_type: { type: "string", enum: ["answering", "correcting", "confirming", "rejecting", "none"], description: "Only confirming if explicit unambiguous affirmation" },
         interpretation_confidence: { type: "string", enum: ["high", "moderate", "low"] },
         ambiguity_flag: { type: "boolean", description: "True if interpretation is uncertain or ambiguous" },
@@ -343,15 +410,14 @@ Deno.serve(async (req) => {
 
     // ==================================================
     // 7. FLOW CONTROL — single return with skip flag
-    // g = true means skip companionCore and persistence
     // ==================================================
 
-    let g = false; // skip flag
-    let h: any = {}; // accepted discoveries
-    let v: any[] = []; // rejected discoveries
-    let R = interpretation.user_response_type || "answering"; // safe response type
-    let E = false; // response type downgraded
-    let T: any = null; // companionCore result
+    let g = false;
+    let h: any = {};
+    let v: any[] = [];
+    let R = interpretation.user_response_type || "answering";
+    let E = false;
+    let T: any = null;
     let m: any = {
       tos_phase_before: currentPhase,
       tos_phase_after: currentPhase,
@@ -370,7 +436,7 @@ Deno.serve(async (req) => {
     };
 
     // ==================================================
-    // 8. AMBIGUITY CHECK — no persistence if ambiguous
+    // 8. AMBIGUITY CHECK
     // ==================================================
 
     if (interpretation.ambiguity_flag === true) {
@@ -402,7 +468,6 @@ Deno.serve(async (req) => {
         m.clarification_needed = "Some of what you've said is clear, but I want to understand the rest better. Could you tell me more?";
         g = true;
       } else if (allDiscoveries.length === 0) {
-        // CONFIRMING special case: no discoveries but confirming/rejecting response type
         const { safe, down } = safeUserResponseType(R, currentPhase);
         R = safe;
         E = down;
@@ -416,7 +481,7 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
-    // 10. USER_RESPONSE_TYPE DOWNGRADE (if not already done)
+    // 10. USER_RESPONSE_TYPE DOWNGRADE
     // ==================================================
 
     if (!g) {
@@ -427,8 +492,6 @@ Deno.serve(async (req) => {
 
     // ==================================================
     // 11. COMPANIONCORE CALL (shared domain logic)
-    // Orchestrator provides narrow persistence capability.
-    // companionCore decides and executes persistence.
     // ==================================================
 
     if (!g && Object.keys(h).length > 0) {
@@ -465,9 +528,7 @@ Deno.serve(async (req) => {
     let asksQuestion = false;
     let generationFallback = false;
 
-    // R1-C.1D-BDI: Generation context — now includes behavioural_notes (from companionCore)
-    // and canonical_phase (authoritative post-processing tos_phase, per Cipher refinement).
-    // session.mode is NOT used as lifecycle truth — tos_phase is canonical.
+    // R1-C.1D-G1: Generation context with profile content + evidence state
     const genContext = {
       user_message,
       accepted_discoveries: m.accepted_discoveries,
@@ -481,7 +542,9 @@ Deno.serve(async (req) => {
       companion_error: m.companion_error,
       no_discoveries: m.no_discoveries,
       behavioural_notes: T?.guidance?.behavioural_notes || [],
-      canonical_phase: m.tos_phase_after
+      canonical_phase: m.tos_phase_after,
+      profile_content: buildProfileContext(profile),  // CORRECTION 3
+      evidence_sufficient: m.ready_to_confirm || m.confirmed  // CORRECTION 3
     };
 
     try {
@@ -509,6 +572,73 @@ Deno.serve(async (req) => {
       responseText = fallback.response_text;
       responseIntent = fallback.response_intent;
       asksQuestion = fallback.asks_question;
+    }
+
+    // ==================================================
+    // 12b. POST-GENERATION VALIDATION (Corrections 1, 3)
+    // Identity integrity + grounded understanding checks
+    // ==================================================
+
+    let generationValidation = "PASSED";
+    let generationRetried = false;
+
+    if (!generationFallback && responseText) {
+      const validation = validateGeneration(responseText, genContext.evidence_sufficient);
+      if (!validation.valid) {
+        generationRetried = true;
+        try {
+          const correctionNote = validation.violation === "identity"
+            ? "IMPORTANT: Your previous response claimed military experience. This is ABSOLUTELY FORBIDDEN. You are a companion, NOT a veteran. You have NEVER served. Generate a corrected response that does not claim any military experience."
+            : "IMPORTANT: Your previous response claimed a level of understanding that the evidence does not support. Do not say 'good picture', 'I understand your transition' or similar unless the evidence state explicitly supports it. Generate a corrected response.";
+
+          const retry = await base44.asServiceRole.integrations.Core.InvokeLLM({
+            prompt: buildGenerationPrompt(genContext) + "\n\n" + correctionNote,
+            response_json_schema: generationSchema
+          });
+
+          if (retry && typeof retry === "object" && typeof retry.response_text === "string" && retry.response_text.trim().length > 0) {
+            const retryValidation = validateGeneration(retry.response_text.trim(), genContext.evidence_sufficient);
+            if (retryValidation.valid) {
+              responseText = retry.response_text.trim();
+              responseIntent = ["ACKNOWLEDGE", "EXPLORE", "CLARIFY", "REFLECT", "CONFIRMATION_PROMPT", "TRANSITION_ACKNOWLEDGEMENT"]
+                .includes(retry.response_intent) ? retry.response_intent : "ACKNOWLEDGE";
+              asksQuestion = retry.asks_question === true;
+              generationValidation = "PASSED_AFTER_RETRY";
+            } else {
+              // Fail-closed
+              if (validation.violation === "identity") {
+                responseText = "I got that wrong — I don't have military experience. I'm a companion, not a veteran. I shouldn't have said that.";
+              } else {
+                const fb = buildFallbackResponse(genContext);
+                responseText = fb.response_text;
+                responseIntent = fb.response_intent;
+                asksQuestion = fb.asks_question;
+              }
+              generationValidation = "FAIL_CLOSED";
+            }
+          } else {
+            if (validation.violation === "identity") {
+              responseText = "I got that wrong — I don't have military experience. I'm a companion, not a veteran. I shouldn't have said that.";
+            } else {
+              const fb = buildFallbackResponse(genContext);
+              responseText = fb.response_text;
+              responseIntent = fb.response_intent;
+              asksQuestion = fb.asks_question;
+            }
+            generationValidation = "FAIL_CLOSED";
+          }
+        } catch {
+          if (validation.violation === "identity") {
+            responseText = "I got that wrong — I don't have military experience. I'm a companion, not a veteran. I shouldn't have said that.";
+          } else {
+            const fb = buildFallbackResponse(genContext);
+            responseText = fb.response_text;
+            responseIntent = fb.response_intent;
+            asksQuestion = fb.asks_question;
+          }
+          generationValidation = "FAIL_CLOSED";
+        }
+      }
     }
 
     // ==================================================
@@ -559,7 +689,9 @@ Deno.serve(async (req) => {
           asks_question: asksQuestion,
           fallback: generationFallback,
           context_phase_before: m.tos_phase_before,
-          context_phase_after: m.tos_phase_after
+          context_phase_after: m.tos_phase_after,
+          validation: generationValidation,
+          retried: generationRetried
         }
       }
     }), { headers: cors });
