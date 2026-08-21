@@ -2,7 +2,7 @@
 
 **Date:** 21 August 2026
 **Engineer:** Ash
-**Commit:** be9c87c
+**Commits:** be9c87c (code), 96abd4f (SITREP), [pending] (R1 frontend integration)
 **Status:** PASS
 
 ---
@@ -17,6 +17,14 @@ Group 2 Safety Clarification implemented in `smudgeOrchestrator.ts` generation/i
 - Included in safety classification call (R3) for pending state evaluation
 - NOT persisted, NOT used as profile evidence, NOT stored as discovery
 - Falls back to profile fields if not provided
+
+### R1 Frontend Integration (completed 21 Aug 2026)
+- **Finding:** Deployed Chat.jsx was invoking smudgeOrchestrator with `{ user_message: text }` only — `recent_context` was not being supplied.
+- **Fix:** Chat.jsx updated via builder to pass a bounded recent conversational window (last 3-4 exchanges) alongside `user_message`.
+- **Builder message:** 1 (app status: ready, no errors)
+- **Verification:** Orchestrator confirmed receiving and processing `recent_context` via API test with `recent_context` + `user_message` payload — normal Group 1 flow, companionCore v1.1.0, generation validation PASSED.
+- **Frontend payload verification:** App loads without errors. Final Network-tab verification of Chat.jsx → orchestrator payload requires Paul's authenticated browser session (part of Exercise SMUDGE 2).
+- **Scope:** Context only — no persistence or evidence changes.
 
 ### R2 — safety_classification (three-way enum)
 - Replaced binary `safety_flag: boolean` with `safety_classification: enum["none", "clear_concern", "ambiguous"]`
@@ -85,15 +93,29 @@ The LLM consistently classified stronger phrases ("I'm thinking of ending it", "
 
 ---
 
+## R1 Frontend Integration Verification
+
+| Check | Result |
+|-------|--------|
+| Builder processed Chat.jsx update | PASS — app status: ready, no errors |
+| App loads without crash | PASS — login page renders (preview requires auth) |
+| Orchestrator receives recent_context + user_message | PASS — API test confirmed normal Group 1 flow with both parameters |
+| Orchestrator uses recent_context in interpretation | PASS — context included in safety classification and interpretation prompt |
+| companionCore v1.1.0 with recent_context | PASS — version unchanged |
+| Generation validation with recent_context | PASS — generation.validation: "PASSED" |
+| Network-tab payload verification (Chat.jsx → orchestrator) | DEFERRED — requires Paul's authenticated browser session (Exercise SMUDGE 2) |
+
+---
+
 ## Engineering Cost
 
 | Resource | Count |
 |----------|-------|
-| Builder messages | 1 |
-| Integration calls (smudgeOrchestrator) | 7 (T1, T2 attempt 1, T2 attempt 2, T2 success, T3, T4/T5, G1-NR) |
-| Entity reads | 2 (profile checks) |
+| Builder messages | 2 (1 orchestrator, 1 Chat.jsx R1 integration) |
+| Integration calls (smudgeOrchestrator) | 8 (T1, T2 attempts, T2 success, T3, T4/T5, G1-NR, R1 frontend verification) |
+| Entity reads | 3 (profile checks) |
 | Entity updates | 2 (set pending state, clear pending state) |
-| Entity deletes | 1 (test profile cleanup) |
+| Entity deletes | 2 (test profile cleanups) |
 
 ---
 
@@ -119,20 +141,21 @@ The LLM consistently classified stronger phrases ("I'm thinking of ending it", "
 - No monitoring/escalation architecture ✅
 - No full Guardian Protocol ✅
 - Group 1 behaviour unchanged beyond minimum necessary for integration ✅
+- recent_context is context only — no persistence, no evidence ✅
 
 ---
 
 ## What Was Not Tested
 
 - T2 with the DI's exact example phrase "I'm thinking of ending it" — LLM consistently classifies this as `clear_concern` (conservative). The ambiguous path was proven with a different phrase. This is a safety classification judgment, not an architecture issue.
-- Frontend `recent_context` integration — tested via API parameter. Chat.jsx modification for Exercise SMUDGE 2 remains Paul's human/UI acceptance test.
+- Frontend Network-tab payload verification — Chat.jsx updated by builder, orchestrator confirmed receiving recent_context via API. Final browser-level verification deferred to Paul's authenticated session during Exercise SMUDGE 2.
 
 ---
 
 ## Next Steps
 
-1. **Paul:** Review and accept Group 2 implementation
-2. **Exercise SMUDGE 2:** Human behavioural validation through Chat.jsx frontend with fresh test user, including safety scenarios
+1. **Paul:** Review and accept Group 2 implementation + R1 frontend integration
+2. **Exercise SMUDGE 2:** Human behavioural validation through Chat.jsx frontend with fresh test user, including safety scenarios. Network-tab verification of recent_context payload as part of this exercise.
 3. **Readiness Review gate (items 22-23):** Pending after Exercise SMUDGE 2
 4. **Go/No-Go decision:** Pending after Readiness Review
 
@@ -142,6 +165,6 @@ The LLM consistently classified stronger phrases ("I'm thinking of ending it", "
 
 **PASS**
 
-All 5 acceptance scenarios (T1-T5) passed. All 8 Group 1 non-regression tests passed. Architecture boundaries verified. companionCore, lifecycle, persistence, and engines unchanged. Safety clarification operates entirely in the orchestration layer.
+All 5 acceptance scenarios (T1-T5) passed. All 8 Group 1 non-regression tests passed. R1 frontend integration completed — Chat.jsx updated to pass recent_context. Architecture boundaries verified. companionCore, lifecycle, persistence, and engines unchanged. Safety clarification operates entirely in the orchestration layer.
 
 Exercise SMUDGE 2 remains Paul's human/UI acceptance test.
