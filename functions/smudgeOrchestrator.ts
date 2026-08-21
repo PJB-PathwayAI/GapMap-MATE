@@ -155,6 +155,17 @@ function formatLifecycleTransition(t: string | null): string {
   return t;
 }
 
+// --- R1-C.1D-CONDUCTOR: Authoritative intent mapping ---
+// Uses interpretation.intent (already computed, previously discarded) to set
+// an authoritative response_intent that generation MUST follow.
+// answering / other / seeking_reassurance / sharing_milestone → null (flexible, normal generation)
+function mapAuthoritativeIntent(rawIntent: string): string | null {
+  if (rawIntent === "expressing_frustration") return "STOP_EXPLORING";
+  if (rawIntent === "asking_orientation") return "EXPLAIN";
+  if (rawIntent === "correcting") return "ACCEPT_CORRECTION";
+  return null;
+}
+
 function buildGenerationPrompt(ctx: any): string {
   const lines: string[] = [];
   lines.push("You are Smudge, a companion for people leaving the military.");
@@ -188,6 +199,19 @@ function buildGenerationPrompt(ctx: any): string {
     lines.push(`- Behavioural guidance: ${ctx.behavioural_notes.join(" | ")}`);
   }
   lines.push("");
+  // R1-C.1D-CONDUCTOR: Authoritative intent — overrides discovery pressure
+  if (ctx.authoritative_intent) {
+    lines.push("AUTHORITATIVE INTENT — this overrides everything else for this turn:");
+    if (ctx.authoritative_intent === "STOP_EXPLORING") {
+      lines.push("The user is frustrated, confused, or pushing back. STOP exploring. Do NOT ask another discovery question. Acknowledge their frustration directly, change your approach, and give them space if they need it. You can acknowledge, reassure, explain, or simply stop — but do not probe.");
+    } else if (ctx.authoritative_intent === "EXPLAIN") {
+      lines.push("The user is asking what MATE or Smudge is, or what this conversation is for. Answer directly and plainly. Do NOT pivot to a discovery question. They need to understand what this is before they will share anything meaningful.");
+    } else if (ctx.authoritative_intent === "ACCEPT_CORRECTION") {
+      lines.push("The user is correcting you. Accept it, recalibrate, and move forward. Do NOT defend, reinterpret, or minimise. If you made an error, own it directly: \"I got that wrong.\" Do not ask a discovery question this turn.");
+    }
+    lines.push("The areas_outstanding and behavioural_notes below are context only — they must NOT override this intent. Do not ask a discovery question this turn.");
+    lines.push("");
+  }
   lines.push("Write a natural response to the user. You MUST follow these rules:");
   lines.push("1. Only reference what the user actually said and what was understood. NEVER invent capabilities, skills, evidence, or career suitability.");
   lines.push("2. Do NOT use internal terminology — no phase names, scores, engines, confidence levels, JSON, or technical terms.");
@@ -225,6 +249,16 @@ const generationSchema = {
 };
 
 function buildFallbackResponse(ctx: any): { response_text: string; response_intent: string; asks_question: boolean } {
+  // R1-C.1D-CONDUCTOR: Authoritative intent in fallback
+  if (ctx.authoritative_intent === "STOP_EXPLORING") {
+    return { response_text: "I hear you. Let's take a breather — we can come back to this whenever you're ready.", response_intent: "ACKNOWLEDGE", asks_question: false };
+  }
+  if (ctx.authoritative_intent === "EXPLAIN") {
+    return { response_text: "MATE is a companion service for people leaving the military. It helps you understand who you are outside the forces, what you're good at, and what your options might be. It's a conversation, not a form or a test.", response_intent: "ACKNOWLEDGE", asks_question: false };
+  }
+  if (ctx.authoritative_intent === "ACCEPT_CORRECTION") {
+    return { response_text: "You're right, I got that wrong. Let me recalibrate.", response_intent: "ACKNOWLEDGE", asks_question: false };
+  }
   if (ctx.companion_error) {
     return { response_text: "I heard you, but something went wrong on my end. Could you say that again?", response_intent: "CLARIFY", asks_question: true };
   }
@@ -672,8 +706,13 @@ Deno.serve(async (req) => {
       lifecycle_transition: null as string | null,
       ready_to_reflect: false,
       ready_to_confirm: false,
-      confirmed: false
+      confirmed: false,
+      authoritative_intent: null as string | null
     };
+
+    // R1-C.1D-CONDUCTOR: Map interpretation.intent to authoritative response intent
+    const authoritativeIntent = mapAuthoritativeIntent(interpretation.intent || "other");
+    m.authoritative_intent = authoritativeIntent;
 
     // ==================================================
     // 8. AMBIGUITY CHECK
@@ -783,7 +822,8 @@ Deno.serve(async (req) => {
       behavioural_notes: T?.guidance?.behavioural_notes || [],
       canonical_phase: m.tos_phase_after,
       profile_content: buildProfileContext(profile),
-      evidence_sufficient: m.ready_to_confirm || m.confirmed
+      evidence_sufficient: m.ready_to_confirm || m.confirmed,
+      authoritative_intent: m.authoritative_intent
     };
 
     try {
@@ -921,6 +961,8 @@ Deno.serve(async (req) => {
         raw_user_response_type: interpretation.user_response_type,
         response_type_downgraded: E,
         safe_user_response_type: R,
+        authoritative_intent: m.authoritative_intent,
+        interpretation_intent: interpretation.intent,
         persistence_model: "COMPANION_CORE_NARROW_CALLBACK",
         generation: {
           intent: responseIntent,
