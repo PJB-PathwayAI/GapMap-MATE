@@ -2,18 +2,25 @@ import { createClientFromRequest } from "npm:@base44/sdk@0.8.31";
 import { companionCore, deserializeProfile, COMPANION_CORE_VERSION } from "../shared/companionCore.ts";
 
 // ============================================================
-// smudgeOrchestrator — R1-C.1D-G1 (SMUDGE MVP Correction Packet Group 1)
+// smudgeOrchestrator — R1-C.1D-G2 (SMUDGE MVP Correction Packet Groups 1 + 2)
 //
 // SCOPE: EXPLORING + CONFIRMING
 // Domain processing: companionCore (shared module v1.1.0 — unchanged)
 //
-// CORRECTIONS APPLIED:
+// GROUP 1 CORRECTIONS (G1 — deployed, regression PASS):
 //   1. Identity Integrity (P0) — strengthened Rule 10 + post-gen validation
 //   3. Grounded Understanding (P0) — profile content + evidence state to gen
 //   4. Orientation Before Exploration (P1) — orientation context in prompt
 //   5. Conductor Behaviour (P1) — reframed context + act variety rules
 //   6. Language Variety (P1) — anti-repetition rule
 //   7. Profile Bootstrap (P1) — auto-create on NO_PROFILE
+//
+// GROUP 2 CORRECTIONS (G2 — safety clarification):
+//   R1. recent_context — frontend passes 3-4 recent exchanges for context
+//   R2. safety_classification — three-way enum (none/clear_concern/ambiguous)
+//   R3. safety classification call — when pending, separate LLM call
+//   R4. recovery semantics — benign clears pending, no discoveries
+//   R5. clarification generation — natural, non-diagnostic, mirrors words
 //
 // FROZEN: companionCore, lifecycle, persistence, engines, entity schemas
 // ============================================================
@@ -150,14 +157,11 @@ function formatLifecycleTransition(t: string | null): string {
 
 function buildGenerationPrompt(ctx: any): string {
   const lines: string[] = [];
-  // R1-C.1D-G1: System prompt — CBR §4 voice + Cipher cross-phase constraint
-  // CORRECTION 4: Orientation content added
   lines.push("You are Smudge, a companion for people leaving the military.");
   lines.push("You are the same person in every conversation — warm, practical, unhurried.");
   lines.push("What you focus on changes depending on where the person is in their journey.");
   lines.push(`Right now they are in the ${ctx.canonical_phase} stage. Adapt your focus to match, but never change who you are.`);
   lines.push("");
-  // CORRECTION 4: What MATE is and what Smudge does
   lines.push("What MATE is: a companion service for people leaving the military. It helps them understand who they are outside the forces, what they're good at, and what their options might be. It's not a form, a test, or an interview — it's a conversation.");
   lines.push("What your job is: to have real conversations. Listen, understand, and help the person see their own capability. You're not an advisor, an assessor, or a form-filler. You're a companion.");
   lines.push("");
@@ -172,10 +176,8 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("Here is what happened in this turn:");
   lines.push(`- What they shared that you understood and saved: ${formatAcceptedDiscoveries(ctx.accepted_discoveries)}`);
   lines.push(`- What you couldn't save (needed more clarity): ${formatRejectedDiscoveries(ctx.rejected_discoveries)}`);
-  // CORRECTION 3: Actual profile content (not just labels)
   lines.push(`- What you actually know about this person so far:`);
   lines.push(ctx.profile_content);
-  // CORRECTION 5: Reframed from checklist to situational awareness
   lines.push(`- Areas you haven't explored yet (for your awareness, not a checklist to work through): ${ctx.areas_outstanding.length > 0 ? ctx.areas_outstanding.join(", ") : "all areas explored"}`);
   lines.push(`- Whether understanding is complete: ${ctx.confirmed ? "yes, they confirmed it" : ctx.ready_to_confirm ? "ready to ask if they confirm" : "not yet — still building"}`);
   lines.push(`- Stage change: ${formatLifecycleTransition(ctx.lifecycle_transition)}`);
@@ -196,9 +198,7 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("7. If a stage changed, acknowledge the transition naturally. Do not announce it as a system event.");
   lines.push("8. If the user seems uncertain or hesitant, do not push. Let them go at their own pace.");
   lines.push("9. If something went wrong on the backend, be honest about it. Do not pretend everything is fine.");
-  // CORRECTION 1: Strengthened identity rule
   lines.push("10. You have NEVER served in the military. You are NOT a veteran. You do NOT have military experience, personal service history, or lived experience of the forces. If asked about your own background, say you're a companion who helps service leavers — nothing more. Never fabricate military biography, rank, regiment, or deployment history.");
-  // R1-C.1D-BDI: CBR-mapped generation rules (rules 11-17)
   lines.push("11. Use mini acknowledgements between answers — \"Got you\", \"Makes sense\", \"Right\" — not full reflections. Save reflections for milestones: a significant personal disclosure, connecting two themes the user hasn't linked, or before transitioning to a new area. Do not reflect after every answer.");
   lines.push("12. If the behavioural guidance says an area has reached substance, move toward closure. Use a checkpoint like \"I think I've got a good picture of that now — anything else before we move on?\" Do not keep probing the same area. If the user signals boredom or frustration, close the topic immediately.");
   lines.push("13. Let questions chain naturally — two or three on a related thread before any reflection. Vary the rhythm. Not every exchange is the same shape. If the user is on a roll, follow it rather than redirecting.");
@@ -206,16 +206,10 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("15. Mirror the user's level of military language. If they say \"shell scrape,\" say \"shell scrape.\" If they say \"SOPs,\" say \"SOPs.\" Do not manufacture military slang or imply service experience. Authenticity follows the individual — it is not a military caricature.");
   lines.push("16. Do not manufacture emotional states or interpretations unsupported by what the user actually said. If they said they enjoy problem-solving, do not interpret that as everything feeling heavy. Stay grounded in their evidence.");
   lines.push("17. If the user corrects you — \"I think you're putting too much weight on that\" — accept it, recalibrate, and move forward. Do not defend or reinterpret the original assumption. If you made an error about your own identity or claims, own it directly: \"I got that wrong\" — do not frame it as a misunderstanding.");
-  // R1-C.1D-G1: Correction rules (18-22)
-  // CORRECTION 3: Grounded understanding
   lines.push("18. Do not claim to have a 'good picture', 'clear picture', or say 'I understand your transition' unless the evidence state explicitly says understanding is complete. If you are still building the picture, say so honestly. The profile content above is what you actually know — do not claim more than it contains.");
-  // CORRECTION 4: Orientation before exploration
   lines.push("19. If the user asks what MATE is, what you do, or what this conversation is for — answer directly and plainly. Do not pivot to a discovery question. They need to understand what this is before they will share anything meaningful.");
-  // CORRECTION 5: Conductor behaviour
   lines.push("20. Do not default to acknowledgement + question every turn. You can: acknowledge briefly, explain something, reassure, close a topic, change direction, pause and let them think, or simply respond to what they said. The 'areas you haven't explored' are for your awareness — they are not a checklist to work through sequentially. Decide what the conversation needs next, not what the next question should be. If the user says 'that covers it' or similar, move on — do not keep probing.");
-  // CORRECTION 5: Frustration changes approach
   lines.push("21. If the user is frustrated, confused, or pushing back — stop exploring. Acknowledge their frustration directly. Change your approach. If they need orientation, give it. If they need space, give it. The conversation itself may have become the problem — fix that before continuing.");
-  // CORRECTION 6: Language variety
   lines.push("22. Vary your acknowledgements. Do not use the same opening word or phrase more than twice in a row. Sometimes do not acknowledge at all — just respond to what they said. 'Got you', 'Makes sense', 'Right', 'Fair enough' — all fine, but not every time and not in sequence.");
   return lines.join("\n");
 }
@@ -249,6 +243,111 @@ function buildFallbackResponse(ctx: any): { response_text: string; response_inte
   return { response_text: "I hear you. Go on.", response_intent: "ACKNOWLEDGE", asks_question: false };
 }
 
+// ============================================================
+// GROUP 2: SAFETY CLARIFICATION FUNCTIONS
+// These operate BEFORE phase routing and companionCore.
+// No lifecycle, persistence (except safety_flags), or engine interaction.
+// ============================================================
+
+// R1: Build safety context from recent exchanges + profile
+function buildSafetyContext(profile: any, recentContext: any): string {
+  const parts: string[] = [];
+  if (recentContext && Array.isArray(recentContext) && recentContext.length > 0) {
+    parts.push("Recent conversation:");
+    for (const msg of recentContext.slice(-4)) {
+      parts.push(`${msg.role === "user" ? "User" : "Smudge"}: ${msg.text}`);
+    }
+  }
+  if (isSubstantive(profile.service_branch)) parts.push(`Service: ${profile.service_branch}`);
+  if (isSubstantive(profile.personal_context)) parts.push(`Current situation: ${profile.personal_context}`);
+  parts.push(`Phase: ${profile.tos_phase || "EXPLORING"}`);
+  return parts.length > 0 ? parts.join("\n") : "No additional context available.";
+}
+
+// R3: Safety classification schema (for pending state evaluation)
+const safetyClassificationSchema = {
+  type: "object",
+  properties: {
+    classification: { type: "string", enum: ["benign", "concern", "ambiguous"] },
+    response_text: { type: "string", description: "Natural response (required for benign and ambiguous, not for concern)" }
+  },
+  required: ["classification"]
+};
+
+// R3: Safety classification call — evaluates user's response to clarification
+async function safetyClassificationCall(base44: any, userMessage: string, safetyFlags: any, recentContext: any, profile: any): Promise<{ classification: string; response_text: string }> {
+  const contextStr = buildSafetyContext(profile, recentContext);
+  const prompt = `You are Smudge, a companion for military service leavers.
+
+The user previously said something that needed safety clarification: "${safetyFlags.trigger_phrase || ""}"
+
+Context at the time: ${safetyFlags.trigger_context || "No additional context available."}
+
+The user has now responded: "${userMessage}"
+
+Classify this response:
+- "benign": The user has established that their original statement was not about self-harm or crisis. They meant something everyday (ending a shift, calling it a day, etc.). Generate a natural, brief acknowledgment. Do not make it dramatic — they were never in crisis.
+- "concern": The user's response confirms or maintains genuine concern about their wellbeing. They are in distress or crisis. Do NOT generate a response — the system will handle this with a safety pathway.
+- "ambiguous": The meaning is still genuinely unclear. Generate a short, natural clarification. Do NOT diagnose, dramatise, or put suicidal intent into the user's mouth. Mirror their own words. Example: "When you say 'ending it', what do you mean, mate?"
+
+Conservative backstop: when uncertainty cannot safely be resolved, classify as "ambiguous". Safety wins.
+
+Context for your assessment:
+${contextStr}`;
+
+  const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+    prompt,
+    response_json_schema: safetyClassificationSchema
+  });
+
+  return {
+    classification: result?.classification || "ambiguous",
+    response_text: result?.response_text || ""
+  };
+}
+
+// R5: Generate initial clarification (when interpretation returns "ambiguous")
+async function generateClarification(base44: any, userMessage: string, profile: any, recentContext: any): Promise<string> {
+  const contextStr = buildSafetyContext(profile, recentContext);
+  const prompt = `You are Smudge, a companion for military service leavers.
+
+The user just said: "${userMessage}"
+
+Context:
+${contextStr}
+
+This message could have a concerning meaning (self-harm, crisis) or a benign one. You cannot tell which. You need to ask a short, natural clarification.
+
+Rules:
+- Do NOT diagnose or dramatise
+- Do NOT put suicidal intent into the user's mouth
+- Mirror the user's own words
+- Short, natural, direct
+- No clinical language
+- Example: "When you say 'ending it', what do you mean, mate?"
+
+Write a single clarifying question. Keep it to one sentence.`;
+
+  const clarificationSchema = {
+    type: "object",
+    properties: {
+      response_text: { type: "string", description: "Short, natural clarifying question" }
+    },
+    required: ["response_text"]
+  };
+
+  const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+    prompt,
+    response_json_schema: clarificationSchema
+  });
+
+  return result?.response_text || "Can you help me understand what you mean by that?";
+}
+
+// ============================================================
+// MAIN HANDLER
+// ============================================================
+
 Deno.serve(async (req) => {
   const cors: Record<string, string> = {
     "Access-Control-Allow-Origin": "*",
@@ -261,6 +360,7 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json();
     const user_message = body.user_message || "";
+    const recent_context = body.recent_context || null;  // R1: Frontend passes 3-4 recent exchanges
     const base44 = createClientFromRequest(req);
 
     // ==================================================
@@ -273,7 +373,6 @@ Deno.serve(async (req) => {
     let profile: any;
 
     if (profiles.length === 0) {
-      // CORRECTION 7: Auto-create instead of "visit dashboard"
       const newProfile = await base44.entities.UserProfile.create({ tos_phase: "EXPLORING", full_name: "" });
       profile_id = newProfile.id;
       profile = deserializeProfile(newProfile);
@@ -283,6 +382,89 @@ Deno.serve(async (req) => {
     }
 
     const currentPhase = profile.tos_phase || "EXPLORING";
+
+    // ==================================================
+    // 1b. SAFETY PENDING CHECK (Group 2 — R3/R4)
+    // If safety_clarification_pending, evaluate the user's
+    // response as a safety clarification, NOT a normal turn.
+    // No discoveries, no companionCore, no lifecycle.
+    // ==================================================
+
+    const safetyFlagsRaw = profile.safety_flags;
+    const isSafetyPending = safetyFlagsRaw &&
+      typeof safetyFlagsRaw === "object" &&
+      !Array.isArray(safetyFlagsRaw) &&
+      safetyFlagsRaw.safety_clarification_pending === true;
+
+    if (isSafetyPending) {
+      let safetyResult: { classification: string; response_text: string };
+      try {
+        safetyResult = await safetyClassificationCall(base44, user_message, safetyFlagsRaw, recent_context, profile);
+      } catch {
+        // Conservative: if classification fails, treat as concern
+        return new Response(JSON.stringify({
+          success: true,
+          response_text: "I'm here. That sounds really difficult. You don't have to face this alone. Samaritans is available 24/7 on 116 123, and NHS 111 can help too.",
+          response_intent: "CLARIFY", asks_question: true,
+          tos_phase: currentPhase, state_changed: false,
+          candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+          companion_result: null, recoverable_error: null,
+          orchestration_note: "SAFETY_CLASSIFICATION_FAILED_CONCERN",
+          companion_core_version: COMPANION_CORE_VERSION,
+          _internal: { safety_flow: "CLASSIFICATION_ERROR", safety_pending: true }
+        }), { headers: cors });
+      }
+
+      if (safetyResult.classification === "benign") {
+        // R4: Clear pending, acknowledge, resume normal conversation next turn
+        await base44.asServiceRole.entities.UserProfile.update(profile_id, { safety_flags: "" });
+
+        let responseText = safetyResult.response_text || "Got it, thanks for clearing that up.";
+        // Identity validation still applies (Correction 1)
+        const idValidation = validateGeneration(responseText, true);
+        if (!idValidation.valid && idValidation.violation === "identity") {
+          responseText = "I got that wrong — I don't have military experience. I'm a companion, not a veteran.";
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          response_text: responseText,
+          response_intent: "ACKNOWLEDGE", asks_question: false,
+          tos_phase: currentPhase, state_changed: false,
+          candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+          companion_result: null, recoverable_error: null,
+          orchestration_note: "SAFETY_BENIGN_RESOLVED",
+          companion_core_version: COMPANION_CORE_VERSION,
+          _internal: { safety_flow: "BENIGN", safety_pending: false }
+        }), { headers: cors });
+      } else if (safetyResult.classification === "concern") {
+        // R7: Activate safety pathway (hardcoded, unchanged)
+        return new Response(JSON.stringify({
+          success: true,
+          response_text: "I'm here. That sounds really difficult. You don't have to face this alone. Samaritans is available 24/7 on 116 123, and NHS 111 can help too.",
+          response_intent: "CLARIFY", asks_question: true,
+          tos_phase: currentPhase, state_changed: false,
+          candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+          companion_result: null, recoverable_error: null,
+          orchestration_note: "SAFETY_CONCERN_SAFETY_PATHWAY",
+          companion_core_version: COMPANION_CORE_VERSION,
+          _internal: { safety_flow: "CONCERN", safety_pending: true }
+        }), { headers: cors });
+      } else {
+        // R8: Still ambiguous — remain pending, clarify again
+        return new Response(JSON.stringify({
+          success: true,
+          response_text: safetyResult.response_text || "Can you help me understand what you mean by that?",
+          response_intent: "CLARIFY", asks_question: true,
+          tos_phase: currentPhase, state_changed: false,
+          candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+          companion_result: null, recoverable_error: null,
+          orchestration_note: "SAFETY_STILL_AMBIGUOUS",
+          companion_core_version: COMPANION_CORE_VERSION,
+          _internal: { safety_flow: "STILL_AMBIGUOUS", safety_pending: true }
+        }), { headers: cors });
+      }
+    }
 
     // ==================================================
     // 2. PHASE ROUTING — EXPLORING + CONFIRMING
@@ -323,7 +505,13 @@ Deno.serve(async (req) => {
 
     // ==================================================
     // 4. LLM INTERPRETATION CALL (InvokeLLM)
+    // R2: safety_classification replaces safety_flag
+    // R1: recent_context included for contextual safety
     // ==================================================
+
+    const recentContextStr = (recent_context && Array.isArray(recent_context) && recent_context.length > 0)
+      ? "\nRecent conversation (last few exchanges):\n" + recent_context.slice(-4).map((m: any) => `${m.role === "user" ? "User" : "Smudge"}: ${m.text}`).join("\n") + "\n"
+      : "";
 
     const interpretPrompt = "You are Smudge, a warm, grounded companion for military service leavers. " +
       "You are in the " + currentPhase + " phase of the MATE journey.\n\n" +
@@ -334,7 +522,8 @@ Deno.serve(async (req) => {
       "- Areas already explored: " + (areas_explored.join(", ") || "none yet") + "\n" +
       "- Areas still outstanding: " + (areas_outstanding.join(", ") || "none") + "\n" +
       "- Professional identity: " + (profile.professional_identity || "not yet shared") + "\n" +
-      "- Service branch: " + (profile.service_branch || "not yet shared") + "\n\n" +
+      "- Service branch: " + (profile.service_branch || "not yet shared") + "\n" +
+      recentContextStr + "\n" +
       'The user just said: "' + user_message + '"\n\n' +
       "Extract candidate discoveries from this message. Rules:\n" +
       "1. Only extract what the user DIRECTLY expressed or STRONGLY implied\n" +
@@ -349,7 +538,12 @@ Deno.serve(async (req) => {
       "- The user's conversational intent\n" +
       "- Whether this is an explicit confirmation/rejection (only if unambiguous)\n" +
       "- Whether the interpretation is ambiguous\n" +
-      "- Whether there are any safety concerns";
+      "- Safety classification (see below)\n\n" +
+      "SAFETY CLASSIFICATION — consider the current phrase, any preceding conversation context provided above, and the current exchange. Do NOT classify based solely on isolated keywords if context clearly establishes a benign meaning.\n" +
+      "  - \"none\": The message is clearly benign in context. Normal conversation should continue.\n" +
+      "  - \"clear_concern\": Sufficient evidence of genuine concern (distress, crisis, self-harm). Safety pathway should activate.\n" +
+      "  - \"ambiguous\": Meaning cannot safely be established from current phrase and context. Clarification is needed.\n" +
+      "Example: \"I've had enough, I'm calling it a day\" after discussing a difficult shift = \"none\". Same phrase after discussing overwhelming stress = may be \"ambiguous\" or \"clear_concern\" depending on context.";
 
     const interpretSchema = {
       type: "object",
@@ -366,9 +560,9 @@ Deno.serve(async (req) => {
         interpretation_confidence: { type: "string", enum: ["high", "moderate", "low"] },
         ambiguity_flag: { type: "boolean", description: "True if interpretation is uncertain or ambiguous" },
         clarification_needed: { type: "string", description: "Question to ask user if ambiguous" },
-        safety_flag: { type: "boolean", description: "True if distress, crisis, or self-harm indicators detected" }
+        safety_classification: { type: "string", enum: ["none", "clear_concern", "ambiguous"], description: "Contextual safety classification — not isolated keyword detection" }
       },
-      required: ["candidate_discoveries", "intent", "user_response_type", "interpretation_confidence", "ambiguity_flag", "safety_flag"]
+      required: ["candidate_discoveries", "intent", "user_response_type", "interpretation_confidence", "ambiguity_flag", "safety_classification"]
     };
 
     const interpretation = await base44.asServiceRole.integrations.Core.InvokeLLM({
@@ -392,10 +586,15 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
-    // 6. SAFETY CHECK — bypass companionCore entirely
+    // 6. SAFETY CLASSIFICATION — three-way (Group 2)
+    // none: normal processing (Group 1 unchanged)
+    // clear_concern: safety pathway (unchanged)
+    // ambiguous: set pending, generate clarification (new)
     // ==================================================
 
-    if (interpretation.safety_flag === true) {
+    const safetyClassification = interpretation.safety_classification || "none";
+
+    if (safetyClassification === "clear_concern") {
       return new Response(JSON.stringify({
         success: true,
         response_text: "I'm here. That sounds really difficult. You don't have to face this alone. Samaritans is available 24/7 on 116 123, and NHS 111 can help too.",
@@ -404,9 +603,50 @@ Deno.serve(async (req) => {
         candidate_discoveries_count: 0, accepted_discoveries_count: 0,
         companion_result: null, recoverable_error: null,
         orchestration_note: "SAFETY_PATH_NO_ENGINE_CALL",
-        companion_core_version: COMPANION_CORE_VERSION
+        companion_core_version: COMPANION_CORE_VERSION,
+        _internal: { safety_flow: "CLEAR_CONCERN", safety_pending: false }
       }), { headers: cors });
     }
+
+    if (safetyClassification === "ambiguous") {
+      // Set pending state on profile
+      const safetyContext = buildSafetyContext(profile, recent_context);
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, {
+        safety_flags: JSON.stringify({
+          safety_clarification_pending: true,
+          trigger_phrase: user_message,
+          trigger_context: safetyContext
+        })
+      });
+
+      // Generate clarification (R5)
+      let clarificationText = "";
+      try {
+        clarificationText = await generateClarification(base44, user_message, profile, recent_context);
+      } catch {
+        clarificationText = "Can you help me understand what you mean by that?";
+      }
+
+      // Identity validation still applies (Correction 1)
+      const idValidation = validateGeneration(clarificationText, true);
+      if (!idValidation.valid && idValidation.violation === "identity") {
+        clarificationText = "I got that wrong — I don't have military experience. I'm a companion, not a veteran.";
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        response_text: clarificationText,
+        response_intent: "CLARIFY", asks_question: true,
+        tos_phase: currentPhase, state_changed: false,
+        candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+        companion_result: null, recoverable_error: null,
+        orchestration_note: "SAFETY_AMBIGUOUS_PENDING_SET",
+        companion_core_version: COMPANION_CORE_VERSION,
+        _internal: { safety_flow: "AMBIGUOUS_PENDING_SET", safety_pending: true }
+      }), { headers: cors });
+    }
+
+    // safety_classification === "none" → continue normal processing (Group 1 unchanged)
 
     // ==================================================
     // 7. FLOW CONTROL — single return with skip flag
@@ -528,7 +768,6 @@ Deno.serve(async (req) => {
     let asksQuestion = false;
     let generationFallback = false;
 
-    // R1-C.1D-G1: Generation context with profile content + evidence state
     const genContext = {
       user_message,
       accepted_discoveries: m.accepted_discoveries,
@@ -543,8 +782,8 @@ Deno.serve(async (req) => {
       no_discoveries: m.no_discoveries,
       behavioural_notes: T?.guidance?.behavioural_notes || [],
       canonical_phase: m.tos_phase_after,
-      profile_content: buildProfileContext(profile),  // CORRECTION 3
-      evidence_sufficient: m.ready_to_confirm || m.confirmed  // CORRECTION 3
+      profile_content: buildProfileContext(profile),
+      evidence_sufficient: m.ready_to_confirm || m.confirmed
     };
 
     try {
@@ -605,7 +844,6 @@ Deno.serve(async (req) => {
               asksQuestion = retry.asks_question === true;
               generationValidation = "PASSED_AFTER_RETRY";
             } else {
-              // Fail-closed
               if (validation.violation === "identity") {
                 responseText = "I got that wrong — I don't have military experience. I'm a companion, not a veteran. I shouldn't have said that.";
               } else {
