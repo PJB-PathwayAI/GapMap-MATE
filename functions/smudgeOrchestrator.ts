@@ -25,6 +25,198 @@ import { companionCore, deserializeProfile, COMPANION_CORE_VERSION } from "../sh
 // FROZEN: companionCore, lifecycle, persistence, engines, entity schemas
 // ============================================================
 
+
+// ============================================================
+// R1-C.1D CONVERSATION AWARENESS — ConversationState helpers
+// All changes are additive. Failure degrades gracefully to pre-awareness behaviour.
+// ============================================================
+
+// Deserialize ConversationState JSON-string fields to native
+function deserializeConversationState(raw: any): any {
+  if (!raw) return null;
+  const s = { ...raw };
+  // Array fields come as JSON strings from SDK
+  const arrayFields = ['topics_covered', 'topics_closed'];
+  for (const f of arrayFields) {
+    if (typeof s[f] === 'string') {
+      try { s[f] = JSON.parse(s[f]); } catch { s[f] = []; }
+    }
+    if (!Array.isArray(s[f])) s[f] = [];
+  }
+  return s;
+}
+
+// Default ConversationState for new sessions
+function defaultConversationState(profileId: string): any {
+  return {
+    user_profile_id: profileId,
+    current_focus: null,
+    conversation_mode: "understanding",
+    user_objective: null,
+    topics_covered: [],
+    topics_closed: [],
+    last_smudge_response: null,
+    last_smudge_intent: null,
+    last_interaction_date: new Date().toISOString(),
+    session_started_date: new Date().toISOString()
+  };
+}
+
+// [R2][R3][R5] Confidence-gated state derivation
+// Derives updated ConversationState from interpretation signals BEFORE generation.
+// Returns { derived: state, is_returning: boolean, session_reset: boolean }
+function deriveConversationState(
+  existing: any,
+  interpretation: any,
+  companionResult: any,
+  currentPhase: string
+): { derived: any; is_returning: boolean; session_reset: boolean } {
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  // Check session boundary (30 min inactivity)
+  let is_returning = false;
+  let session_reset = false;
+  let sessionStartedDate = existing.session_started_date || nowIso;
+
+  if (existing.last_interaction_date) {
+    const lastDate = new Date(existing.last_interaction_date);
+    const diffMs = now.getTime() - lastDate.getTime();
+    const diffMin = diffMs / 60000;
+    if (diffMin > 30) {
+      is_returning = true;
+      sessionStartedDate = nowIso;
+      session_reset = true;
+    }
+  }
+
+  // 7-day mode reset (long break = fresh start on mode)
+  let conversationMode = existing.conversation_mode || "understanding";
+  if (existing.last_interaction_date) {
+    const lastDate = new Date(existing.last_interaction_date);
+    const diffDays = (now.getTime() - lastDate.getTime()) / 86400000;
+    if (diffDays > 7) {
+      conversationMode = "understanding";
+    }
+  }
+
+  // Clone existing state as the base
+  const derived: any = {
+    user_profile_id: existing.user_profile_id,
+    current_focus: existing.current_focus || null,
+    conversation_mode: conversationMode,
+    user_objective: existing.user_objective || null,
+    topics_covered: Array.isArray(existing.topics_covered) ? [...existing.topics_covered] : [],
+    topics_closed: Array.isArray(existing.topics_closed) ? [...existing.topics_closed] : [],
+    last_smudge_response: existing.last_smudge_response || null,  // will be updated after generation
+    last_smudge_intent: existing.last_smudge_intent || null,       // will be updated after generation
+    last_interaction_date: nowIso,
+    session_started_date: sessionStartedDate
+  };
+
+  // Get interpretation confidence and signals
+  const conf = interpretation?.interpretation_confidence || "low";
+  const topicSignal = interpretation?.topic_signal || "none";
+  const topicLabel = interpretation?.topic_label || "";
+  const helpRequest = interpretation?.help_request || "";
+  const userObjectiveSignal = interpretation?.user_objective_signal || "";
+
+  // [R3] "closed" always applies (explicit by nature)
+  if (topicSignal === "closed" && topicLabel) {
+    if (!derived.topics_closed.includes(topicLabel)) {
+      derived.topics_closed.push(topicLabel);
+    }
+  }
+
+  // [R3] "covered" requires HIGH confidence (inferred, not explicit)
+  if (topicSignal === "covered" && topicLabel && conf === "high") {
+    // Build brief summary from discoveries this turn
+    const discoveries = interpretation?.candidate_discoveries || [];
+    const summaryParts = discoveries
+      .filter((d: any) => d.confidence === "high")
+      .map((d: any) => `${d.field}: ${d.value}`)
+      .slice(0, 3);
+    const summary = summaryParts.length > 0 ? summaryParts.join("; ") : "discussed";
+    // Check if topic already covered
+    const existingTopic = derived.topics_covered.find((t: any) => t.topic === topicLabel);
+    if (!existingTopic) {
+      derived.topics_covered.push({ topic: topicLabel, summary });
+    }
+  }
+
+  // [R2] "shifted" requires moderate+ confidence
+  if (topicSignal === "shifted" && topicLabel && (conf === "high" || conf === "moderate")) {
+    derived.current_focus = topicLabel;
+  }
+
+  // [R2] help_request requires moderate+ confidence
+  if (helpRequest && (conf === "high" || conf === "moderate")) {
+    derived.conversation_mode = "helping";
+    derived.user_objective = helpRequest;
+  }
+
+  // [R2] user_objective_signal requires moderate+ confidence
+  if (userObjectiveSignal && (conf === "high" || conf === "moderate")) {
+    derived.user_objective = userObjectiveSignal;
+  }
+
+  // [R5] Low-confidence no-overwrite guard: on low confidence, all signal-derived fields
+  // retain existing values (already handled by only applying on high/moderate above).
+  // Only last_interaction_date and session_started_date are always updated.
+
+  // [C2] helping -> understanding: ONLY on explicit signal
+  // User must explicitly signal return to discovery
+  if (existing.conversation_mode === "helping" && derived.conversation_mode === "helping") {
+    // Check if user explicitly signaled return to discovery
+    if (!helpRequest && topicSignal === "closed" && userObjectiveSignal &&
+        (userObjectiveSignal.toLowerCase().includes("know") ||
+         userObjectiveSignal.toLowerCase().includes("understand") ||
+         userObjectiveSignal.toLowerCase().includes("explore") ||
+         userObjectiveSignal.toLowerCase().includes("figure out")) &&
+        (conf === "high" || conf === "moderate")) {
+      derived.conversation_mode = "understanding";
+    }
+  }
+
+  // Lifecycle-driven transition: CONFIRMED -> transitioning (always, deterministic)
+  if (companionResult) {
+    const companionPhase = companionResult.mergedProfile?.tos_phase || currentPhase;
+    if (companionPhase === "CONFIRMED" && currentPhase !== "CONFIRMED") {
+      derived.conversation_mode = "transitioning";
+    }
+  }
+
+  return { derived, is_returning, session_reset };
+}
+
+// Build conversation awareness context string for generation prompt
+function buildConversationAwareness(ctx: any): string {
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("CONVERSATION AWARENESS — what you know about where the conversation is:");
+  lines.push(`- What you said last: "${ctx.last_smudge_response || '(first message)'}"`);
+  lines.push(`- Your last conversational act: ${ctx.last_smudge_intent || "none"}`);
+  lines.push(`- What the conversation is about right now: ${ctx.current_focus || "getting to know each other"}`);
+  lines.push(`- What the user is trying to achieve: ${ctx.user_objective || "not yet expressed"}`);
+  const coveredTopics = Array.isArray(ctx.topics_covered) ? ctx.topics_covered.map((t: any) => t.topic) : [];
+  lines.push(`- Topics you've already covered: ${coveredTopics.length > 0 ? coveredTopics.join(", ") : "none yet"}`);
+  const closedTopics = Array.isArray(ctx.topics_closed) ? ctx.topics_closed : [];
+  lines.push(`- Topics the user has closed (do NOT reopen these without reason): ${closedTopics.length > 0 ? closedTopics.join(", ") : "none"}`);
+  lines.push(`- Conversation mode: ${ctx.conversation_mode}`);
+  if (ctx.is_returning_user) {
+    lines.push("- The user is returning after a break. They may need a brief, natural recap of where you were.");
+  }
+  lines.push("");
+  lines.push("The conversation state above reflects the user's CURRENT message, including any topic closures or focus changes they just signaled.");
+  return lines.join("\n");
+}
+
+// Truncate last_smudge_response to 1000 chars [C4]
+function truncateResponse(text: string): string {
+  if (!text) return "";
+  return text.length > 1000 ? text.substring(0, 1000) : text;
+}
+
 // --- Substance threshold (for profile context building only) ---
 const SUBSTANCE_THRESHOLD = 15;
 
@@ -189,6 +381,9 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push(`- What you couldn't save (needed more clarity): ${formatRejectedDiscoveries(ctx.rejected_discoveries)}`);
   lines.push(`- What you actually know about this person so far:`);
   lines.push(ctx.profile_content);
+  // R1-C.1D CONVERSATION AWARENESS
+  if (ctx.conversation_awareness) lines.push(ctx.conversation_awareness);
+  if (ctx.recent_context_for_gen) lines.push(ctx.recent_context_for_gen);
   lines.push(`- Areas you haven't explored yet (for your awareness, not a checklist to work through): ${ctx.areas_outstanding.length > 0 ? ctx.areas_outstanding.join(", ") : "all areas explored"}`);
   lines.push(`- Whether understanding is complete: ${ctx.confirmed ? "yes, they confirmed it" : ctx.ready_to_confirm ? "ready to ask if they confirm" : "not yet — still building"}`);
   lines.push(`- Stage change: ${formatLifecycleTransition(ctx.lifecycle_transition)}`);
@@ -235,6 +430,9 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("20. Do not default to acknowledgement + question every turn. You can: acknowledge briefly, explain something, reassure, close a topic, change direction, pause and let them think, or simply respond to what they said. The 'areas you haven't explored' are for your awareness — they are not a checklist to work through sequentially. Decide what the conversation needs next, not what the next question should be. If the user says 'that covers it' or similar, move on — do not keep probing.");
   lines.push("21. If the user is frustrated, confused, or pushing back — stop exploring. Acknowledge their frustration directly. Change your approach. If they need orientation, give it. If they need space, give it. The conversation itself may have become the problem — fix that before continuing.");
   lines.push("22. Vary your acknowledgements. Do not use the same opening word or phrase more than twice in a row. Sometimes do not acknowledge at all — just respond to what they said. 'Got you', 'Makes sense', 'Right', 'Fair enough' — all fine, but not every time and not in sequence.");
+  // R1-C.1D CONVERSATION AWARENESS rules
+  lines.push("23. You can see what you said last turn and what topics you've covered. Do NOT repeat information from previous turns. Do NOT reopen topics the user has closed. If the user is returning after a break, briefly and naturally acknowledge where you were — do not restart from scratch.");
+  lines.push("24. If the conversation mode is \"helping\", the user has asked for help with something. Help them. Do not ask another discovery question unless they explicitly invite it. If the mode is \"understanding\", continue building understanding — but do not ask about topics already covered or closed.");
   return lines.join("\n");
 }
 
@@ -418,6 +616,57 @@ Deno.serve(async (req) => {
     const currentPhase = profile.tos_phase || "EXPLORING";
 
     // ==================================================
+    // 1.5. CONVERSATIONSTATE ACQUISITION (NEW — R1-C.1D) [C3]
+    // One state record per authenticated UserProfile.
+    // Failure degrades gracefully to defaults.
+    // ==================================================
+
+    let convState: any = defaultConversationState(profile_id);
+    let convStateId: string | null = null;
+    let is_returning_user = false;
+
+    try {
+      const convStates = await base44.asServiceRole.entities.ConversationState.filter({ user_profile_id: profile_id });
+      if (convStates && convStates.length === 1) {
+        convStateId = convStates[0].id;
+        convState = deserializeConversationState(convStates[0]);
+      } else if (convStates && convStates.length > 1) {
+        // Defensive — data integrity issue. Use most recent, log warning.
+        convStates.sort((a: any, b: any) => 
+          new Date(b.updated_date || 0).getTime() - new Date(a.updated_date || 0).getTime());
+        convStateId = convStates[0].id;
+        convState = deserializeConversationState(convStates[0]);
+      } else {
+        // No ConversationState exists — create one
+        const newConvState = await base44.asServiceRole.entities.ConversationState.create({
+          user_profile_id: profile_id,
+          conversation_mode: "understanding",
+          current_focus: "",
+          user_objective: "",
+          topics_covered: "[]",
+          topics_closed: "[]",
+          last_smudge_response: "",
+          last_smudge_intent: "",
+          last_interaction_date: new Date().toISOString(),
+          session_started_date: new Date().toISOString()
+        });
+        convStateId = newConvState.id;
+        convState = defaultConversationState(profile_id);
+      }
+
+      // Session boundary detection (30 min)
+      if (convState.last_interaction_date) {
+        const lastDate = new Date(convState.last_interaction_date);
+        const diffMin = (Date.now() - lastDate.getTime()) / 60000;
+        if (diffMin > 30) is_returning_user = true;
+      }
+    } catch {
+      // Graceful degradation — use defaults
+      convState = defaultConversationState(profile_id);
+      convStateId = null;
+    }
+
+    // ==================================================
     // 1b. SAFETY PENDING CHECK (Group 2 — R3/R4)
     // If safety_clarification_pending, evaluate the user's
     // response as a safety clarification, NOT a normal turn.
@@ -595,9 +844,14 @@ Deno.serve(async (req) => {
         interpretation_confidence: { type: "string", enum: ["high", "moderate", "low"] },
         ambiguity_flag: { type: "boolean", description: "True if interpretation is uncertain or ambiguous" },
         clarification_needed: { type: "string", description: "Question to ask user if ambiguous" },
-        safety_classification: { type: "string", enum: ["none", "clear_concern", "ambiguous"], description: "Contextual safety classification — not isolated keyword detection" }
+        safety_classification: { type: "string", enum: ["none", "clear_concern", "ambiguous"], description: "Contextual safety classification — not isolated keyword detection" },
+        // R1-C.1D CONVERSATION AWARENESS — 4 new signal fields [R1 few-shot examples]
+        topic_signal: { type: "string", enum: ["none", "covered", "closed", "shifted"], description: "Conversational topic signal. 'none' = no signal. 'covered' = user seems to have finished discussing a topic naturally (inferred). 'closed' = user explicitly said they're done with a topic. 'shifted' = user changed focus to a different topic. Examples: 'that's all on that for now' = closed. 'anyway, I wanted to ask you something else' = shifted. 'so yeah, that's basically my background' after a long discussion = covered. 'I've been in the Army for 9 years, did signals, was based in York' = none (just sharing). 'moving on' = closed. 'actually, can I ask about...' = shifted." },
+        topic_label: { type: "string", description: "Brief label for the topic being discussed, if detectable. Use standard labels: 'service history', 'current circumstances', 'goals', 'what I'm good at', 'CV help', 'job options', 'what influences me', 'confidence'. Empty string if unclear. Examples: if user says 'that's all on my time in the Army' → 'service history'. if user says 'can we talk about what I want to do next?' → 'goals'." },
+        help_request: { type: "string", description: "If the user is asking for help, advice, or guidance (not just providing information), what they're asking for. Empty string if not a help request. Examples: 'so what jobs could I do?' → 'what jobs could I do'. 'can you help me with my CV?' → 'help with CV'. 'what should I do first?' → 'what should I do first'. 'I've been in signals for 9 years' → '' (information, not a request). 'I'm not sure what I'm good at' → '' (sharing uncertainty, not a direct request)." },
+        user_objective_signal: { type: "string", description: "If the user expresses a goal or objective for this conversation. Empty string if not expressed. Examples: 'I want to figure out what civilian jobs I could do' → 'figure out what civilian jobs I could do'. 'I'm trying to understand what I'm actually good at' → 'understand what I'm good at'. 'I just want to get my CV sorted' → 'get CV sorted'. 'I was in the signals corps for 8 years' → '' (sharing, not an objective)." }
       },
-      required: ["candidate_discoveries", "intent", "user_response_type", "interpretation_confidence", "ambiguity_flag", "safety_classification"]
+      required: ["candidate_discoveries", "intent", "user_response_type", "interpretation_confidence", "ambiguity_flag", "safety_classification", "topic_signal", "topic_label", "help_request", "user_objective_signal"]
     };
 
     const interpretation = await base44.asServiceRole.integrations.Core.InvokeLLM({
@@ -809,6 +1063,17 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
+    // 11.5. CONVERSATIONSTATE DERIVATION (NEW — R1-C.1D) [C1] [R2] [R3] [R5]
+    // Derive updated state BEFORE generation so the LLM sees
+    // current-turn signals (topic closures, focus changes).
+    // State is NOT yet persisted — persist after generation (step 12c).
+    // ==================================================
+
+    const { derived: derivedConvState, is_returning: _ir } = deriveConversationState(
+      convState, interpretation, T, currentPhase
+    );
+
+    // ==================================================
     // 12. RESPONSE GENERATION (second LLM call or fallback)
     // ==================================================
 
@@ -816,6 +1081,23 @@ Deno.serve(async (req) => {
     let responseIntent = "ACKNOWLEDGE";
     let asksQuestion = false;
     let generationFallback = false;
+
+    // Build conversation awareness context string for prompt [R4]
+    const conversationAwarenessStr = buildConversationAwareness({
+      last_smudge_response: convState.last_smudge_response,
+      last_smudge_intent: convState.last_smudge_intent,
+      conversation_mode: derivedConvState.conversation_mode,
+      current_focus: derivedConvState.current_focus,
+      user_objective: derivedConvState.user_objective,
+      topics_covered: derivedConvState.topics_covered,
+      topics_closed: derivedConvState.topics_closed,
+      is_returning_user: is_returning_user
+    });
+
+    // [R4] recent_context safety net — always available regardless of signal extraction
+    const recentContextForGen = (recent_context && Array.isArray(recent_context) && recent_context.length > 0)
+      ? "\nRecent conversation (last few exchanges):\n" + recent_context.slice(-4).map((m: any) => `${m.role === "user" ? "User" : "Smudge"}: ${m.text}`).join("\n") + "\n"
+      : "";
 
     const genContext = {
       user_message,
@@ -833,7 +1115,10 @@ Deno.serve(async (req) => {
       canonical_phase: m.tos_phase_after,
       profile_content: buildProfileContext(profile),
       evidence_sufficient: m.ready_to_confirm || m.confirmed,
-      authoritative_intent: m.authoritative_intent
+      authoritative_intent: m.authoritative_intent,
+      // R1-C.1D CONVERSATION AWARENESS [C1] [R4]
+      conversation_awareness: conversationAwarenessStr,
+      recent_context_for_gen: recentContextForGen
     };
 
     try {
@@ -930,6 +1215,34 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
+    // 12c. CONVERSATIONSTATE PERSIST (NEW — R1-C.1D) [C1] [C4]
+    // Persist derived state + generation results.
+    // Failure is logged but does not affect the response.
+    // ==================================================
+
+    let convStatePersisted = false;
+    if (convStateId) {
+      try {
+        const persistPayload: any = {
+          current_focus: derivedConvState.current_focus || "",
+          conversation_mode: derivedConvState.conversation_mode,
+          user_objective: derivedConvState.user_objective || "",
+          topics_covered: JSON.stringify(derivedConvState.topics_covered || []),
+          topics_closed: JSON.stringify(derivedConvState.topics_closed || []),
+          last_smudge_response: truncateResponse(responseText),  // [C4] bounded to 1000 chars
+          last_smudge_intent: responseIntent,
+          last_interaction_date: new Date().toISOString(),
+          session_started_date: derivedConvState.session_started_date
+        };
+        await base44.asServiceRole.entities.ConversationState.update(convStateId, persistPayload);
+        convStatePersisted = true;
+      } catch {
+        // Log but continue — response already generated
+        convStatePersisted = false;
+      }
+    }
+
+    // ==================================================
     // 13. SINGLE RETURN
     // ==================================================
 
@@ -942,6 +1255,7 @@ Deno.serve(async (req) => {
       state_changed: m.state_changed,
       clarification_needed: m.clarification_needed,
       generation_fallback: generationFallback,
+      conversation_state_persisted: convStatePersisted,
       candidate_discoveries_count: (interpretation.candidate_discoveries || []).length,
       accepted_discoveries_count: Object.keys(h).length,
       rejected_discoveries: m.rejected_discoveries,
@@ -960,7 +1274,7 @@ Deno.serve(async (req) => {
         ? "CLARIFICATION_PATH"
         : g && m.no_discoveries
         ? "NO_DISCOVERIES"
-        : "R1-C.1C_GENERATED",
+        : "R1-C.1D_GENERATED",
       companion_core_version: COMPANION_CORE_VERSION,
       _internal: {
         validation_decisions: {
@@ -974,6 +1288,20 @@ Deno.serve(async (req) => {
         authoritative_intent: m.authoritative_intent,
         interpretation_intent: interpretation.intent,
         persistence_model: "COMPANION_CORE_NARROW_CALLBACK",
+        conversation_awareness: {
+          conv_state_id: convStateId,
+          persisted: convStatePersisted,
+          is_returning_user: is_returning_user,
+          derived_mode: derivedConvState.conversation_mode,
+          derived_focus: derivedConvState.current_focus,
+          topics_covered_count: (derivedConvState.topics_covered || []).length,
+          topics_closed_count: (derivedConvState.topics_closed || []).length,
+          interpretation_confidence: interpretation.interpretation_confidence || "unknown",
+          topic_signal: interpretation.topic_signal || "none",
+          topic_label: interpretation.topic_label || "",
+          help_request: interpretation.help_request || "",
+          user_objective_signal: interpretation.user_objective_signal || ""
+        },
         generation: {
           intent: responseIntent,
           asks_question: asksQuestion,

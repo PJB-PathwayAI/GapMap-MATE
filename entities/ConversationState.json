@@ -1,0 +1,55 @@
+{
+  "properties": {
+    "user_profile_id": {
+      "type": "string",
+      "description": "FK to UserProfile.id — ONE record per profile"
+    },
+    "current_focus": {
+      "type": "string",
+      "description": "What the conversation is about right now"
+    },
+    "conversation_mode": {
+      "type": "string",
+      "enum": ["understanding", "helping", "transitioning"],
+      "description": "Current conversational mode — independent of tos_phase"
+    },
+    "user_objective": {
+      "type": "string",
+      "description": "What the user is trying to achieve in this conversation"
+    },
+    "topics_covered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "topic": { "type": "string" },
+          "summary": { "type": "string" }
+        }
+      },
+      "description": "Topics discussed with brief summaries"
+    },
+    "topics_closed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Topics the user explicitly closed — do not reopen"
+    },
+    "last_smudge_response": {
+      "type": "string",
+      "description": "What Smudge said last turn (bounded 1000 chars)"
+    },
+    "last_smudge_intent": {
+      "type": "string",
+      "description": "Smudge's last response_intent"
+    },
+    "last_interaction_date": {
+      "type": "string",
+      "description": "ISO datetime of last user message"
+    },
+    "session_started_date": {
+      "type": "string",
+      "description": "ISO datetime of current session start"
+    }
+  },
+  "required": ["user_profile_id", "conversation_mode"],
+  "type": "object"
+}
