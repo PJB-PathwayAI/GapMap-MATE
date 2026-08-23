@@ -1,16 +1,18 @@
-# R1-C.1D — CONVERSATION AWARENESS DESIGN INTENT (v2 — CIPHER REFINEMENTS)
+# R1-C.1D — CONVERSATION AWARENESS DESIGN INTENT (v3 — CIPHER + CONFIDENCE REFINEMENTS)
 
 **Date:** 23 August 2026  
 **Engineer:** Ash  
-**Status:** DESIGN INTENT (v2) — NO IMPLEMENTATION AUTHORISED  
+**Status:** DESIGN INTENT (v3) — NO IMPLEMENTATION AUTHORISED  
 **Authority:** Paul (R1-C.1D — Conversational Awareness Design Authority)  
 **Predecessor:** R1-C.1D Full Conversational Architecture Diagnostic (67434fe)  
-**Cipher Review:** PASS WITH FOUR REQUIRED REFINEMENTS (23 Aug 2026)  
-**Refinements applied:** v2 incorporates all four Cipher refinements. Changes marked [C1]-[C4].
+**Cipher Review:** PASS WITH FOUR REQUIRED REFINEMENTS (23 Aug 2026) — applied in v2  
+**Confidence Refinements:** Five additional refinements (Paul + Ash, 23 Aug 2026) — applied in v3. Changes marked [R1]-[R5].  
 
 ---
 
-## 0. Cipher Refinement Summary
+## 0. Refinement Summary
+
+### 0.1 Cipher refinements (applied in v2)
 
 | # | Refinement | Where addressed |
 |---|---|---|
@@ -18,6 +20,16 @@
 | C2 | Do not automatically return helping → understanding based on undefined "request resolved". Helping persists until an explicit conversational signal changes it. | §5.3 |
 | C3 | Lock ConversationState ownership to exactly one state record per authenticated UserProfile; no arbitrary profile lookup/write. | §3, §4 |
 | C4 | Tighten privacy treatment of `last_smudge_response`: bounded storage and acknowledge that generated text may reflect user-sensitive content. | §2.5, §11 |
+
+### 0.2 Confidence refinements (applied in v3)
+
+| # | Refinement | Where addressed |
+|---|---|---|
+| R1 | Few-shot examples in the interpretation signal schema for all 4 new fields. | §5.2 |
+| R2 | Confidence-gated state changes: only apply state updates when `interpretation_confidence` is high or moderate. On low confidence, skip the state update. | §5.3, §5.4 |
+| R3 | Asymmetric treatment: `closed` always applies (explicit by nature). `covered` only applies on high interpretation confidence (inferred, not explicit). | §5.3 |
+| R4 | `recent_context` + `last_smudge_response` as explicit safety net: even if signal extraction fails completely, generation still has raw conversation context as fallback. | §5.5, §10.6 |
+| R5 | Low-confidence no-overwrite guard [Cipher]: never overwrite existing ConversationState fields with low-confidence-derived values. Stale-but-trusted beats fresh-but-noisy. | §5.3, §5.4 |
 
 ---
 
@@ -112,7 +124,7 @@ ConversationState
 ### 3.1 Ownership model
 
 | State | Owner | Writer | Reader |
-|---|---|---|---|
+|---|---|---|
 | Profile / evidence / lifecycle | companionCore | companionCore (via persist callback) | smudgeOrchestrator, companionService |
 | Safety state | smudgeOrchestrator (safety flows) | smudgeOrchestrator (safety_flags on UserProfile) | smudgeOrchestrator |
 | **ConversationState** | **smudgeOrchestrator** | **smudgeOrchestrator (derive before generation, persist after)** [C1] | **smudgeOrchestrator (start of turn)** |
@@ -186,27 +198,38 @@ This threshold is a heuristic. It can be tuned. The important thing is that the 
 **Key change from v1:** The proposed ConversationState is derived BEFORE generation and provided to the generation LLM on the same turn. It is persisted AFTER generation.
 
 ```
-Step 4:   Interpretation LLM (existing + 4 new signal fields)
+Step 4:   Interpretation LLM (existing + 4 new signal fields [R1])
           → produces topic_signal, topic_label, help_request, user_objective_signal
+          → produces interpretation_confidence (existing field)
 
 Step 11:  companionCore (existing)
           → produces lifecycle_transition, behavioural_notes, areas assessment
 
-Step 11.5: ConversationState derivation (NEW) [C1]
+Step 11.5: ConversationState derivation (NEW) [C1] [R2] [R5]
           → read interpretation signals from step 4
+          → read interpretation_confidence from step 4
+          → apply confidence gating (§5.3, §5.4):
+              → high/moderate confidence: apply state changes
+              → low confidence: skip state changes, retain existing values [R5]
+              → "closed" signals always apply regardless of confidence [R3]
           → derive proposed updated ConversationState:
-              current_focus = updated if topic_signal == "shifted"
-              conversation_mode = updated per transition rules (§5.3)
-              user_objective = updated if user_objective_signal non-empty
-              topics_covered = append if topic_signal == "covered"
-              topics_closed = append if topic_signal == "closed"
-              last_interaction_date = now
+              current_focus = updated if topic_signal == "shifted" AND confidence ≥ moderate
+              conversation_mode = updated per transition rules (§5.3) AND confidence ≥ moderate
+              user_objective = updated if user_objective_signal non-empty AND confidence ≥ moderate
+              topics_covered = append if topic_signal == "covered" AND confidence == high [R3]
+              topics_closed = append if topic_signal == "closed" (always — explicit by nature) [R3]
+              last_interaction_date = now (always — not confidence-gated)
           → this derived state is passed to genContext (step 12)
           → this derived state is NOT yet persisted
 
 Step 12:  Generation LLM (existing + conversation awareness)
-          → genContext includes the DERIVED ConversationState [C1]
+          → genContext includes:
+              - the DERIVED ConversationState from step 11.5 [C1]
+              - recent_context (from frontend) [R4]
+              - last_smudge_response (from persisted state — previous turn)
           → generation produces response_text, response_intent, asks_question
+          → EVEN IF signal extraction failed completely, generation still has:
+              recent_context + last_smudge_response as fallback [R4]
 
 Step 12c: ConversationState persist (NEW) [C1]
           → take the derived state from step 11.5
@@ -221,61 +244,146 @@ Step 12c: ConversationState persist (NEW) [C1]
 
 The generation LLM needs to see the CURRENT turn's conversational state, not just the previous turn's. If the user says "that's all on that, let's talk about something else," the interpretation detects `topic_signal: "closed"` + `topic_signal: "shifted"`. The derived state marks the topic as closed and updates `current_focus`. The generation LLM sees this and knows not to revisit the closed topic — in the SAME turn. If we derived after generation, the LLM wouldn't know about the closure until next turn.
 
-This means the generation LLM receives the state as it SHOULD be at the end of this turn (minus `last_smudge_response`, which isn't known until generation completes). The prompt should make this clear: "The conversation state below reflects the user's current message, including any topic closures or focus changes they just signaled."
+This means the generation LLM receives the state as it SHOULD be at the end of this turn (minus `last_smudge_response`, which isn't known until generation completes). The prompt makes this clear: "The conversation state below reflects the user's current message, including any topic closures or focus changes they just signaled."
 
-### 5.2 Signal extraction from interpretation
+### 5.2 Signal extraction from interpretation [R1]
 
-The interpretation LLM (step 4) already processes the user message + recent_context. It is the best-positioned component to detect conversational signals. The interpretation response schema is extended with 4 new fields:
+The interpretation LLM (step 4) already processes the user message + recent_context. It is the best-positioned component to detect conversational signals. The interpretation response schema is extended with 4 new fields, each including few-shot examples [R1]:
 
 ```
 // NEW fields added to interpretSchema
+
 topic_signal: {
   type: "string",
   enum: ["none", "covered", "closed", "shifted"],
-  description: "Conversational topic signal. 'none' = no signal. 'covered' = user seems to have finished discussing a topic naturally. 'closed' = user explicitly said they're done with a topic ('that's all', 'moving on'). 'shifted' = user changed focus to a different topic."
+  description: "Conversational topic signal. " +
+    "'none' = no signal. " +
+    "'covered' = user seems to have finished discussing a topic naturally (inferred). " +
+    "'closed' = user explicitly said they're done with a topic. " +
+    "'shifted' = user changed focus to a different topic. " +
+    "Examples: 'that's all on that for now' = closed. " +
+    "'anyway, I wanted to ask you something else' = shifted. " +
+    "'so yeah, that's basically my background' after a long discussion = covered. " +
+    "'I've been in the Army for 9 years, did signals, was based in York' = none (just sharing). " +
+    "'moving on' = closed. 'actually, can I ask about...' = shifted."
 },
+
 topic_label: {
   type: "string",
-  description: "Brief label for the topic being discussed, if detectable. 'service history', 'current circumstances', 'goals', 'CV help', etc. Empty string if unclear."
+  description: "Brief label for the topic being discussed, if detectable. " +
+    "Use standard labels: 'service history', 'current circumstances', 'goals', " +
+    "'what I'm good at', 'CV help', 'job options', 'what influences me', 'confidence'. " +
+    "Empty string if unclear. " +
+    "Examples: if user says 'that's all on my time in the Army' → 'service history'. " +
+    "if user says 'can we talk about what I want to do next?' → 'goals'."
 },
+
 help_request: {
   type: "string",
-  description: "If the user is asking for help, advice, or guidance (not just providing information), what they're asking for. Empty string if not a help request. Example: 'help with CV' or 'what jobs could I do'."
+  description: "If the user is asking for help, advice, or guidance (not just providing " +
+    "information), what they're asking for. Empty string if not a help request. " +
+    "Examples: 'so what jobs could I do?' → 'what jobs could I do'. " +
+    "'can you help me with my CV?' → 'help with CV'. " +
+    "'what should I do first?' → 'what should I do first'. " +
+    "'I've been in signals for 9 years' → '' (information, not a request). " +
+    "'I'm not sure what I'm good at' → '' (sharing uncertainty, not a direct request)."
 },
+
 user_objective_signal: {
   type: "string",
-  description: "If the user expresses a goal or objective for this conversation. Empty string if not expressed. Example: 'figure out what civilian jobs I could do' or 'understand what I'm good at'."
+  description: "If the user expresses a goal or objective for this conversation. " +
+    "Empty string if not expressed. " +
+    "Examples: 'I want to figure out what civilian jobs I could do' → " +
+    "'figure out what civilian jobs I could do'. " +
+    "'I'm trying to understand what I'm actually good at' → " +
+    "'understand what I'm good at'. " +
+    "'I just want to get my CV sorted' → 'get CV sorted'. " +
+    "'I was in the signals corps for 8 years' → '' (sharing, not an objective)."
 }
 ```
 
-These 4 fields are **additions** to the existing interpretation schema. They do not replace or modify any existing field. The interpretation LLM already has `recent_context` (last 3-4 exchanges) and the current message, so it has the information to detect these signals without additional context.
+**Why few-shot examples? [R1]**
 
-### 5.3 Deterministic state transitions [C2]
+The existing `safety_classification` field already uses this pattern — military-context examples ("I've had enough, I'm calling it a day" = none). LLMs are dramatically better at nuanced classification with concrete examples in-schema. The examples above are drawn from Bodge-persona language patterns and SMUDGE 1-3 exercise transcripts to maximise relevance.
 
-The orchestrator applies these updates deterministically based on the interpretation signals:
+### 5.3 Deterministic state transitions [C2] [R2] [R3] [R5]
 
-| Signal | State update |
-|---|---|
-| `topic_signal: "covered"` + `topic_label: "X"` | Append `{topic: "X", summary: "(derived from discoveries this turn)"}` to `topics_covered` |
-| `topic_signal: "closed"` + `topic_label: "X"` | Append `"X"` to `topics_closed` |
-| `topic_signal: "shifted"` + `topic_label: "X"` | Set `current_focus = "X"` |
-| `help_request` non-empty | Set `conversation_mode = "helping"`, set `user_objective = help_request value` |
-| `user_objective_signal` non-empty | Set `user_objective = user_objective_signal value` |
-| Lifecycle reached CONFIRMED (from companionCore) | Set `conversation_mode = "transitioning"` |
+The orchestrator applies state updates deterministically based on interpretation signals AND interpretation confidence:
+
+| Signal | Confidence gate | State update |
+|---|---|---|
+| `topic_signal: "closed"` + `topic_label: "X"` | **Always applies** [R3] — explicit by nature | Append `"X"` to `topics_closed` |
+| `topic_signal: "covered"` + `topic_label: "X"` | **High confidence only** [R3] — inferred, not explicit | Append `{topic: "X", summary: "(derived from discoveries this turn)"}` to `topics_covered` |
+| `topic_signal: "shifted"` + `topic_label: "X"` | High or moderate [R2] | Set `current_focus = "X"` |
+| `help_request` non-empty | High or moderate [R2] | Set `conversation_mode = "helping"`, set `user_objective = help_request value` |
+| `user_objective_signal` non-empty | High or moderate [R2] | Set `user_objective = user_objective_signal value` |
+| Lifecycle reached CONFIRMED | Always — deterministic from companionCore | Set `conversation_mode = "transitioning"` |
+| `last_interaction_date` | Always — not signal-derived | Set to now |
+
+**Asymmetric treatment of "covered" vs "closed" [R3]:**
+
+`closed` is explicit — the user said "that's all" or "moving on." There is no ambiguity. It always applies regardless of interpretation confidence. Even a low-confidence interpretation that detects an explicit closure should be respected — the cost of a false positive (marking a topic closed that wasn't) is low because the user can reopen it by simply talking about it again.
+
+`covered` is inferred — the LLM thinks the topic naturally concluded based on the flow of conversation. This is subjective. A false positive (marking a topic covered that the user still wants to explore) would prevent Smudge from returning to it, which could feel dismissive. Therefore `covered` requires **high** interpretation confidence. On moderate or low confidence, the topic is not marked as covered — Smudge retains the ability to return to it.
+
+**Low-confidence no-overwrite guard [R5]:**
+
+On low interpretation confidence, NO state fields are overwritten. The existing ConversationState values are retained for all signal-derived fields. Only `last_interaction_date` is updated (it's a timestamp, not a signal). This means:
+
+- A low-confidence turn does NOT corrupt the conversation state.
+- The generation LLM still sees the previous turn's state (which was written with high/moderate confidence).
+- The generation LLM also sees `recent_context` (raw conversation) and `last_smudge_response` — so even with no state update, it has conversational context [R4].
+- Stale-but-trusted beats fresh-but-noisy. A missed signal = current behaviour (safe). A false signal = corrupted state (worse).
 
 **Mode transition rules [C2]:**
 
-- `understanding → helping`: when `help_request` is non-empty (user asked for help)
-- `understanding → transitioning`: when lifecycle reaches CONFIRMED (understanding complete)
-- `helping → understanding`: **ONLY when an explicit conversational signal indicates it.** Valid signals:
+- `understanding → helping`: when `help_request` is non-empty AND confidence ≥ moderate [R2]
+- `understanding → transitioning`: when lifecycle reaches CONFIRMED (always — deterministic)
+- `helping → understanding`: **ONLY when an explicit conversational signal indicates it AND confidence ≥ moderate** [C2] [R2]. Valid signals:
   - User explicitly says they want to return to discovery: "actually, let's go back to..." or "what else do you need to know about me?"
   - User explicitly closes the help topic AND expresses a new objective that is discovery-oriented
   - Interpretation `help_request` is empty AND `topic_signal` is "closed" for the help topic AND `user_objective_signal` expresses a discovery goal
-- `transitioning → helping`: when user asks for help with next-phase activities
+- `transitioning → helping`: when user asks for help with next-phase activities AND confidence ≥ moderate
 
 **What was removed [C2]:** The v1 design had "No help request + mode was 'helping' + topic resolved → return to understanding." Cipher correctly identified that "topic resolved" is undefined. This automatic return is REMOVED. Helping persists until an explicit conversational signal changes it. The generation LLM in "helping" mode will not ask discovery questions — if the user wants to return to discovery, they signal it, and the interpretation detects it.
 
 **Safety valve:** If `conversation_mode` has been "helping" for more than 10 consecutive turns without a mode-change signal, the orchestrator may include a gentle behavioural note: "The user has been in helping mode for N turns. Consider whether they might benefit from returning to discovery." This is a NOTE to the generation LLM, not an automatic mode change. The mode only changes on explicit signal.
+
+### 5.4 Confidence gating decision table [R2] [R5]
+
+| Interpretation confidence | `closed` | `covered` | `shifted` | `help_request` | `user_objective` | `last_interaction_date` |
+|---|---|---|---|---|---|---|
+| **High** | ✅ Apply | ✅ Apply | ✅ Apply | ✅ Apply | ✅ Apply | ✅ Apply (always) |
+| **Moderate** | ✅ Apply | ❌ Skip [R3] | ✅ Apply | ✅ Apply | ✅ Apply | ✅ Apply (always) |
+| **Low** | ✅ Apply [R3] | ❌ Skip | ❌ Skip [R5] | ❌ Skip [R5] | ❌ Skip [R5] | ✅ Apply (always) |
+| **Missing/invalid** | ❌ Skip | ❌ Skip | ❌ Skip | ❌ Skip | ❌ Skip | ✅ Apply (always) |
+
+**Rationale:**
+- `closed` always applies because it's an explicit user signal — "that's all" means "that's all" regardless of how confident the LLM is about the rest of the interpretation.
+- `covered` requires high confidence because it's an inference about natural topic completion — the LLM is guessing that the user has finished, which is subjective.
+- All other signal-derived fields require at least moderate confidence. On low confidence, the existing state is retained [R5].
+
+### 5.5 Safety net: recent_context + last_smudge_response [R4]
+
+Even if signal extraction fails completely (interpretation LLM returns no signal fields, or all fields are empty/invalid, or confidence is low across the board), the generation LLM still receives:
+
+1. **`recent_context`** — the last 3-4 exchanges from the frontend. This is raw conversation text that the LLM can use to infer continuity, avoid repetition, and maintain flow. This is available regardless of signal extraction success.
+
+2. **`last_smudge_response`** — what Smudge said last turn (from the persisted ConversationState). Even with no state update this turn, the LLM knows what it said last.
+
+3. **`last_smudge_intent`** — what Smudge's last conversational act was.
+
+This means the floor of the system is: **generation with raw conversation context + last response**. This is already better than today (where generation has neither). The structured ConversationState fields (topics_covered, topics_closed, current_focus, etc.) are an enhancement on top of this floor — they improve accuracy when signal extraction succeeds, but the system doesn't collapse when it fails.
+
+| Signal extraction outcome | What generation receives |
+|---|---|
+| All signals extracted, high confidence | Full derived state + recent_context + last_smudge_response |
+| Some signals extracted, moderate confidence | Partial state update + recent_context + last_smudge_response |
+| No signals / all low confidence | Previous turn's state (unchanged) + recent_context + last_smudge_response |
+| Interpretation LLM failed entirely | Previous turn's state (unchanged) + recent_context + last_smudge_response |
+| ConversationState read failed | Defaults (null/empty) + recent_context (from frontend) |
+
+**In all cases, generation has at least as much context as it has today.** In most cases, it has significantly more. [R4]
 
 ---
 
@@ -306,8 +414,8 @@ const genContext = {
   authoritative_intent: m.authoritative_intent,
 
   // ─── NEW: Conversation awareness (derived state from step 11.5) [C1] ───
-  recent_context,                    // Last 3-4 exchanges (from frontend, already available)
-  last_smudge_response,             // What Smudge said LAST turn (from persisted ConversationState)
+  recent_context,                    // Last 3-4 exchanges (from frontend) [R4 safety net]
+  last_smudge_response,             // What Smudge said LAST turn (from persisted ConversationState) [R4 safety net]
   last_smudge_intent,               // What Smudge's last conversational act was
   conversation_mode,                 // DERIVED for this turn: "understanding" | "helping" | "transitioning"
   current_focus,                     // DERIVED for this turn: what the conversation is about
@@ -335,7 +443,7 @@ The `buildGenerationPrompt()` function is extended with a new section inserted a
 ${is_returning_user ? "- The user is returning after a break. They may need a brief, natural recap of where you were." : ""}
 ```
 
-**Important note for generation:** The conversation state above reflects the user's CURRENT message, including any topic closures or focus changes they just signaled. If a topic is listed as closed, the user closed it in this message or a previous one — do not reopen it.
+**Important note for generation:** The conversation state below reflects the user's CURRENT message, including any topic closures or focus changes they just signaled. If a topic is listed as closed, the user closed it in this message or a previous one — do not reopen it.
 
 And two new rules added to the rules section:
 
@@ -348,7 +456,7 @@ And two new rules added to the rules section:
 
 `recent_context` is already available in the orchestrator (received from the frontend at line 397). It is currently used ONLY in the interpretation prompt. This design adds it to genContext so the generation LLM also sees the last 3-4 exchanges.
 
-This is the single highest-impact, lowest-cost change in the design. No schema change, no new entity, no new LLM call. Just one field added to genContext and one section added to the generation prompt.
+This is the single highest-impact, lowest-cost change in the design. No schema change, no new entity, no new LLM call. Just one field added to genContext and one section added to the generation prompt. It also serves as the primary safety net [R4] — even if all signal extraction fails, the generation LLM still has raw conversation context.
 
 ---
 
@@ -493,7 +601,7 @@ If the derivation step (11.5) fails (e.g., interpretation didn't return signal f
 If the interpretation LLM does not return the new conversation awareness fields (e.g., schema not deployed, LLM ignores them):
 
 - Default all signals to "none" / empty string
-- No state update for that turn
+- No state update for that turn (confidence gating skips all signal-derived fields) [R5]
 - ConversationState retains previous values
 - **Impact:** No conversation awareness update this turn. Self-heals when the schema is deployed.
 
@@ -505,7 +613,17 @@ If genContext is built without conversation awareness fields (e.g., partial depl
 - Generation proceeds with existing context only
 - **Impact:** Same as current behaviour. No regression.
 
-**Principle:** Conversation awareness is additive. Every failure path degrades gracefully to the current behaviour. It cannot make the system worse than it is today.
+### 10.6 Safety net: signal extraction fails but conversation context survives [R4]
+
+Even in the worst case (interpretation LLM fails entirely, no signal fields returned, confidence is invalid):
+
+- `recent_context` is passed directly from the frontend to genContext — it does NOT depend on interpretation or ConversationState
+- `last_smudge_response` is read from the persisted ConversationState at step 1.5 — it does NOT depend on this turn's signal extraction
+- The generation LLM always has at least: current message + last 3-4 exchanges + what Smudge said last turn
+- This is already a material improvement over today (where generation has only the current message + static profile)
+- **Impact:** Floor is "better than today." Ceiling is "full conversation awareness." No scenario produces "worse than today."
+
+**Principle:** Conversation awareness is additive. Every failure path degrades gracefully. The system cannot be made worse than it is today by any failure in the conversation awareness subsystem. [R4]
 
 ---
 
@@ -518,7 +636,7 @@ If genContext is built without conversation awareness fields (e.g., partial depl
 | `current_focus` | Overwritten each turn | Fixed size |
 | `conversation_mode` | Overwritten each turn | Fixed size |
 | `user_objective` | Overwritten when new objective expressed | Fixed size |
-| `topics_covered` | Appended when topic covered | Bounded by conversation topics (typically 6-12 per journey) |
+| `topics_covered` | Appended when topic covered (high confidence only) [R3] | Bounded by conversation topics (typically 6-12 per journey) |
 | `topics_closed` | Appended when user closes topic | Bounded (typically 3-8 per journey) |
 | `last_smudge_response` | Overwritten each turn, max 1000 chars [C4] | Bounded — 1000 chars max |
 | `last_smudge_intent` | Overwritten each turn | Fixed size (enum) |
@@ -583,8 +701,8 @@ The ONLY changes are:
 |---|---|---|---|
 | 1 | Base44 entity | Create `ConversationState` entity | Schema definition |
 | 2 | smudgeOrchestrator.ts | Step 1.5: Read/create ConversationState (one record per profile) [C3] | ~25 lines |
-| 3 | smudgeOrchestrator.ts | Extend interpretSchema with 4 conversation signal fields | ~15 lines |
-| 4 | smudgeOrchestrator.ts | Step 11.5: Derive updated ConversationState before generation [C1] | ~30 lines |
+| 3 | smudgeOrchestrator.ts | Extend interpretSchema with 4 conversation signal fields + few-shot examples [R1] | ~35 lines |
+| 4 | smudgeOrchestrator.ts | Step 11.5: Derive updated ConversationState with confidence gating [C1] [R2] [R3] [R5] | ~40 lines |
 | 5 | smudgeOrchestrator.ts | Add `recent_context` to genContext | 1 line |
 | 6 | smudgeOrchestrator.ts | Add conversation awareness fields to genContext (from derived state) [C1] | ~10 lines |
 | 7 | smudgeOrchestrator.ts | Add conversation awareness section to buildGenerationPrompt() | ~15 lines |
@@ -593,7 +711,7 @@ The ONLY changes are:
 | 10 | smudgeOrchestrator.ts | Deserialize ConversationState fields (JSON strings) | ~10 lines |
 | 11 | smudgeOrchestrator.ts | Session boundary detection (30-min heuristic) + 7-day mode reset | ~8 lines |
 
-**Total: ~139 lines of new code in smudgeOrchestrator.ts + 1 new entity.**
+**Total: ~169 lines of new code in smudgeOrchestrator.ts + 1 new entity.**
 
 ### 13.2 Files NOT changed
 
@@ -613,7 +731,7 @@ The ONLY changes are:
 
 No additional LLM call. The 4 new interpretation fields are extracted in the existing interpretation call (step 4). The generation call (step 12) remains a single call (plus retry on validation failure, same as today).
 
-**Cost impact:** Marginally longer prompts (interpretation prompt +4 fields in response schema, generation prompt +~15 lines of context). Estimated +200-400 tokens per turn. No additional API calls.
+**Cost impact:** Marginally longer prompts (interpretation prompt +4 fields with examples in response schema, generation prompt +~15 lines of context). Estimated +300-500 tokens per turn (slightly higher than v2 due to few-shot examples [R1]). No additional API calls.
 
 ---
 
@@ -683,6 +801,16 @@ SMUDGE 4 tests conversation awareness through natural conversation. The tester (
 - Have 5+ turns of conversation
 - PASS: Only ONE ConversationState record exists for the profile. No duplicate records created.
 
+**T13 — Low-confidence noise rejection [R2] [R5]**
+- Send a deliberately vague/ambiguous message (e.g., "hmm, yeah, I dunno really")
+- Check that ConversationState was NOT updated with spurious topic closures or mode changes
+- PASS: ConversationState retains previous values. Low-confidence interpretation did not corrupt the state.
+
+**T14 — Safety net: conversation continuity without structured state [R4]**
+- Simulate signal extraction failure (e.g., interpretation returns no signal fields)
+- Send a normal conversational message
+- PASS: Smudge still responds with conversational awareness (no repetition, references previous context) because `recent_context` + `last_smudge_response` provide fallback context.
+
 ### 14.3 Test profile
 
 Tests use a fresh test profile (created by Chat.jsx auto-bootstrap). ConversationState is created on first interaction. No pre-seeding required.
@@ -697,13 +825,13 @@ After testing, the test profile AND its ConversationState are deleted.
 
 The mechanism is `conversation_mode`, which is independent of `tos_phase`:
 
-1. **User-driven transition:** When the user sends a help request (detected by the interpretation LLM's `help_request` field), the orchestrator derives `conversation_mode = "helping"` BEFORE generation (step 11.5) [C1]. The generation LLM receives: "The user has asked for help with X. Help them. Do not ask another discovery question." This works even if areas_outstanding is non-empty — the user asked for help, so Smudge helps.
+1. **User-driven transition:** When the user sends a help request (detected by the interpretation LLM's `help_request` field with few-shot examples [R1]), the orchestrator derives `conversation_mode = "helping"` BEFORE generation (step 11.5) [C1] — gated by moderate+ confidence [R2]. The generation LLM receives: "The user has asked for help with X. Help them. Do not ask another discovery question." This works even if areas_outstanding is non-empty — the user asked for help, so Smudge helps.
 
 2. **Lifecycle-driven transition:** When companionCore transitions the lifecycle to CONFIRMED (all 6 areas substantive + user confirmed), the orchestrator sets `conversation_mode = "transitioning"`. The generation LLM receives: "Understanding is complete. Acknowledge the transition. Don't restart discovery."
 
 3. **No premature return [C2]:** Helping mode persists until the user explicitly signals a return to discovery. There is no automatic "request resolved" transition. This prevents Smudge from slipping back into discovery mode mid-help.
 
-4. **Explicit return [C2]:** `helping → understanding` only when the user explicitly signals it (e.g., "what else do you need to know about me?" or "let's go back to..."). The interpretation LLM detects this as `user_objective_signal` expressing a discovery goal + `help_request` empty. The orchestrator then transitions mode.
+4. **Explicit return [C2]:** `helping → understanding` only when the user explicitly signals it (e.g., "what else do you need to know about me?" or "let's go back to...") AND interpretation confidence is moderate+ [R2]. The interpretation LLM detects this as `user_objective_signal` expressing a discovery goal + `help_request` empty. The orchestrator then transitions mode.
 
 5. **No premature lifecycle transition:** `conversation_mode` does NOT override the lifecycle. A user in "helping" mode is still in EXPLORING or CONFIRMING lifecycle. The lifecycle transitions only when companionCore's substance checks pass. The conversation mode only affects what the generation LLM does THIS turn, not where the user is in their journey.
 
@@ -732,48 +860,55 @@ The mechanism is `conversation_mode`, which is independent of `tos_phase`:
 ## 17. Design Summary
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                    smudgeOrchestrator                             │
-│                                                                  │
-│  Step 1:    Profile acquisition (UserProfile)       [existing]  │
-│  Step 1.5:  ConversationState acquisition            [NEW] [C3] │
-│             → read ONE ConversationState for profile_id          │
-│             → create if none exists (exactly one)                │
-│             → detect returning user                              │
-│                                                                  │
-│  Step 2:    Phase routing                            [existing]  │
-│  Step 3:    Areas snapshot                           [existing]  │
-│  Step 4:    Interpretation LLM                       [MODIFIED]  │
-│             → +4 conversation signal fields in schema             │
-│             → recent_context already included                   │
-│  Step 5:    Validation                                [existing]  │
-│  Step 6:    Safety classification                     [existing]  │
-│  Steps 7-11: Conductor, ambiguity, validation,      [existing]  │
-│              downgrade, companionCore                            │
-│  Step 11.5: ConversationState derivation             [NEW] [C1] │
-│             → extract signals from interpretation                 │
-│             → derive updated state (mode, focus, topics, etc.)   │
-│             → pass derived state to genContext                   │
-│             → DO NOT persist yet                                  │
-│  Step 12:   Generation LLM                           [MODIFIED]  │
-│             → +recent_context in genContext                      │
-│             → +conversation awareness fields (derived) [C1]      │
-│             → +conversation awareness section in prompt          │
-│             → +rules 23-24 in prompt                             │
-│  Step 12c:  ConversationState persist                [NEW] [C1] │
-│             → take derived state from step 11.5                  │
-│             → add last_smudge_response (bounded 1000 chars) [C4]│
-│             → add last_smudge_intent                              │
-│             → persist via ConversationState.update()              │
-│  Step 13:   Response                                 [existing]  │
-│                                                                  │
-│  companionCore:    UNCHANGED                                     │
-│  companionService: UNCHANGED                                     │
-│  Engines:          UNCHANGED                                     │
-│  UserProfile:       UNCHANGED                                     │
-│  Chat.jsx:          UNCHANGED                                     │
-│  Safety flows:      UNCHANGED                                     │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                    smudgeOrchestrator                                 │
+│                                                                      │
+│  Step 1:    Profile acquisition (UserProfile)         [existing]   │
+│  Step 1.5:  ConversationState acquisition                [NEW] [C3]  │
+│             → read ONE ConversationState for profile_id              │
+│             → create if none exists (exactly one)                    │
+│             → detect returning user                                  │
+│                                                                      │
+│  Step 2:    Phase routing                              [existing]    │
+│  Step 3:    Areas snapshot                             [existing]    │
+│  Step 4:    Interpretation LLM                         [MODIFIED]    │
+│             → +4 conversation signal fields with few-shot examples  │
+│               [R1]                                                   │
+│             → recent_context already included                       │
+│             → interpretation_confidence (existing, now used for     │
+│               confidence gating) [R2]                                │
+│  Step 5:    Validation                                  [existing]    │
+│  Step 6:    Safety classification                       [existing]    │
+│  Steps 7-11: Conductor, ambiguity, validation,        [existing]    │
+│              downgrade, companionCore                                │
+│  Step 11.5: ConversationState derivation               [NEW] [C1]  │
+│             → extract signals from interpretation                     │
+│             → apply confidence gating [R2] [R3] [R5]                 │
+│             → derive updated state (mode, focus, topics, etc.)      │
+│             → pass derived state to genContext                       │
+│             → DO NOT persist yet                                     │
+│  Step 12:   Generation LLM                             [MODIFIED]    │
+│             → +recent_context in genContext [R4 safety net]         │
+│             → +conversation awareness fields (derived) [C1]          │
+│             → +conversation awareness section in prompt              │
+│             → +rules 23-24 in prompt                                 │
+│             → SAFETY NET: even if all signal extraction fails,       │
+│               generation has recent_context + last_smudge_response   │
+│               [R4]                                                   │
+│  Step 12c:  ConversationState persist                  [NEW] [C1]    │
+│             → take derived state from step 11.5                      │
+│             → add last_smudge_response (bounded 1000 chars) [C4]    │
+│             → add last_smudge_intent                                  │
+│             → persist via ConversationState.update()                  │
+│  Step 13:   Response                                   [existing]    │
+│                                                                      │
+│  companionCore:    UNCHANGED                                         │
+│  companionService: UNCHANGED                                         │
+│  Engines:          UNCHANGED                                         │
+│  UserProfile:       UNCHANGED                                         │
+│  Chat.jsx:          UNCHANGED                                         │
+│  Safety flows:      UNCHANGED                                         │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -783,15 +918,19 @@ The mechanism is `conversation_mode`, which is independent of `tos_phase`:
 | Component | Change |
 |---|---|
 | ConversationState entity | NEW — 10 fields, 1 FK, one record per profile [C3] |
-| smudgeOrchestrator.ts | MODIFIED — ~139 new lines, 0 existing lines changed |
-| Interpretation schema | EXTENDED — 4 new output fields |
+| smudgeOrchestrator.ts | MODIFIED — ~169 new lines, 0 existing lines changed |
+| Interpretation schema | EXTENDED — 4 new output fields with few-shot examples [R1] |
 | Generation prompt | EXTENDED — 2 new sections, 2 new rules |
 | genContext | EXTENDED — 8 new fields (from derived state) [C1] |
+| Confidence gating | NEW — gate state updates on interpretation_confidence [R2] [R3] [R5] |
+| Safety net | NEW — recent_context + last_smudge_response as fallback [R4] |
 | Everything else | UNCHANGED |
 
 ---
 
-## 19. Cipher Refinement Disposition
+## 19. Refinement Disposition
+
+### 19.1 Cipher refinements (v2)
 
 | # | Refinement | Disposition | Where |
 |---|---|---|---|
@@ -800,10 +939,35 @@ The mechanism is `conversation_mode`, which is independent of `tos_phase`:
 | C3 | One state record per profile | APPLIED — Step 1.5 enforces one record. No arbitrary lookup. Uses exact profile_id from step 1. | §3.2, §3.3, §4 |
 | C4 | Bounded last_smudge_response + sensitive content acknowledgement | APPLIED — 1000 char cap, single-turn retention, cascade deletion, explicit privacy acknowledgement. | §2.5, §11.2 |
 
+### 19.2 Confidence refinements (v3)
+
+| # | Refinement | Disposition | Where |
+|---|---|---|---|
+| R1 | Few-shot examples in signal schema | APPLIED — All 4 new interpretation fields include military-context examples drawn from Bodge-persona patterns and SMUDGE 1-3 transcripts. | §5.2 |
+| R2 | Confidence-gated state changes | APPLIED — State updates only on high/moderate interpretation_confidence. Low confidence skips updates. Decision table in §5.4. | §5.3, §5.4 |
+| R3 | Asymmetric "covered" vs "closed" | APPLIED — `closed` always applies (explicit). `covered` requires high confidence (inferred). | §5.3, §5.4 |
+| R4 | recent_context + last_smudge_response safety net | APPLIED — Explicit fallback documented. Floor is "better than today" in all failure scenarios. | §5.5, §10.6 |
+| R5 | Low-confidence no-overwrite guard [Cipher] | APPLIED — Never overwrite existing ConversationState fields with low-confidence-derived values. Stale-but-trusted beats fresh-but-noisy. | §5.3, §5.4 |
+
 ---
 
-END OF DESIGN INTENT (v2).
+## 20. Success Probability Assessment
+
+With all refinements (C1-C4 + R1-R5), the estimated probability of material improvement in conversational continuity:
+
+**~92%**
+
+- **Low-risk components (95%+):** Entity creation, graceful degradation, recent_context wiring, no new LLM calls, no existing lines changed.
+- **Medium-risk components (85-90%):** Interpretation signal extraction accuracy (mitigated by few-shot examples [R1] and confidence gating [R2] [R3] [R5]).
+- **Residual uncertainty (8%):** Genuinely requires human testing — "would a service leaver willingly keep talking to this bloke?" This is what Exercise SMUDGE 4 is for.
+
+**Floor (worst case):** Generation has recent_context + last_smudge_response. Better than today. [R4]
+**Ceiling (best case):** Full conversation awareness with accurate signal extraction. Companion-grade continuity.
+
+---
+
+END OF DESIGN INTENT (v3).
 
 STOP.
 
-Awaiting final three-view approval (Paul + Cipher + Ash).
+Awaiting final three-view sign-off (Paul + Cipher + Ash).
