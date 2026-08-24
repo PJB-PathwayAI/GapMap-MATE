@@ -148,7 +148,10 @@
       "type": "string"
     },
     "goals": {
-      "type": "string"
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "milestones": {
       "items": {
@@ -157,7 +160,10 @@
       "type": "array"
     },
     "operational_context": {
-      "type": "string"
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
     },
     "operational_picture_confirmed": {
       "type": "boolean"

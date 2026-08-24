@@ -128,18 +128,18 @@ function deriveConversationState(
     }
   }
 
-  // [R3] "covered" requires HIGH confidence (inferred, not explicit)
-  if (topicSignal === "covered" && topicLabel && conf === "high") {
-    // Build brief summary from discoveries this turn
-    const discoveries = interpretation?.candidate_discoveries || [];
-    const summaryParts = discoveries
-      .filter((d: any) => d.confidence === "high")
-      .map((d: any) => `${d.field}: ${d.value}`)
-      .slice(0, 3);
-    const summary = summaryParts.length > 0 ? summaryParts.join("; ") : "discussed";
-    // Check if topic already covered
+  // R1-C.1E PACKET 2: Lower threshold for topics_covered — "topic discussed" not "high-confidence evidence"
+  // Topic is "discussed" if topic_label is present AND (non-"none" signal OR discoveries this turn)
+  const discoveries = interpretation?.candidate_discoveries || [];
+  const hasContent = discoveries.length > 0 || topicSignal !== "none";
+  if (topicLabel && hasContent) {
     const existingTopic = derived.topics_covered.find((t: any) => t.topic === topicLabel);
     if (!existingTopic) {
+      const summaryParts = discoveries
+        .filter((d: any) => d.confidence === "high")
+        .map((d: any) => `${d.field}: ${d.value}`)
+        .slice(0, 3);
+      const summary = summaryParts.length > 0 ? summaryParts.join("; ") : "discussed";
       derived.topics_covered.push({ topic: topicLabel, summary });
     }
   }
@@ -228,29 +228,33 @@ function isSubstantive(value: any): boolean {
   return false;
 }
 
-// --- Deterministic validation gate ---
+// --- R1-C.1E: Deterministic validation gate ---
+// SKIP_FIELDS removed — service_history and operational_context now extractable
 const ACCEPTABLE_SOURCE_TYPES = ["direct_statement"];
 const ACCEPTABLE_CONFIDENCE = ["high"];
-const SKIP_FIELDS = ["service_history", "operational_context"];
 
+// R1-C.1E: user_confidence must be numeric (amendment #3 — no qualitative conversion)
 function mapDiscoveryValue(field: string, value: string): any {
-  if (field === "years_served" || field === "user_confidence") {
+  if (field === "years_served") {
     const num = parseFloat(value);
     return isNaN(num) ? value : num;
+  }
+  if (field === "user_confidence") {
+    const num = parseFloat(value);
+    return isNaN(num) ? null : num;  // Don't store qualitative strings
   }
   return value;
 }
 
+// R1-C.1E: buildNewDiscoveries — handles structured_value, evidence_log with UUIDs, no SKIP_FIELDS
 function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; rejected: any[] } {
   const accepted: any = {};
   const rejected: any[] = [];
   const goalsList: string[] = [];
+  const evidenceLog: any[] = [];
+  const today = new Date().toISOString().split('T')[0];
 
   for (const d of discoveries) {
-    if (SKIP_FIELDS.includes(d.field)) {
-      rejected.push({ field: d.field, value: d.value, reason: "COMPLEX_FIELD_SKIPPED" });
-      continue;
-    }
     if (!ACCEPTABLE_SOURCE_TYPES.includes(d.source_type)) {
       rejected.push({ field: d.field, value: d.value, reason: "SOURCE_TYPE_NOT_DIRECT_STATEMENT" });
       continue;
@@ -259,15 +263,63 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
       rejected.push({ field: d.field, value: d.value, reason: "CONFIDENCE_NOT_HIGH" });
       continue;
     }
-    const mappedValue = mapDiscoveryValue(d.field, d.value);
-    if (d.field === "goals") {
+
+    // R1-C.1E: Handle structured values for service_history and operational_context
+    if (d.field === "service_history" && d.structured_value && typeof d.structured_value === "object") {
+      if (!accepted.service_history) accepted.service_history = [];
+      accepted.service_history.push(d.structured_value);
+      evidenceLog.push({
+        evidence_id: crypto.randomUUID(),
+        source_type: "conversation",
+        source_reference: "Discovery conversation — service_history",
+        content: JSON.stringify(d.structured_value),
+        source_text: d.source_text || "",
+        recorded_date: today
+      });
+    } else if (d.field === "operational_context" && d.structured_value && typeof d.structured_value === "object") {
+      if (!accepted.operational_context) accepted.operational_context = [];
+      accepted.operational_context.push(d.structured_value);
+      evidenceLog.push({
+        evidence_id: crypto.randomUUID(),
+        source_type: "conversation",
+        source_reference: "Discovery conversation — operational_context",
+        content: JSON.stringify(d.structured_value),
+        source_text: d.source_text || "",
+        recorded_date: today
+      });
+    } else if (d.field === "goals") {
       goalsList.push(d.value);
+      evidenceLog.push({
+        evidence_id: crypto.randomUUID(),
+        source_type: "conversation",
+        source_reference: "Discovery conversation — goals",
+        content: d.value,
+        source_text: d.source_text || "",
+        recorded_date: today
+      });
     } else {
+      const mappedValue = mapDiscoveryValue(d.field, d.value);
+      if (mappedValue === null) {
+        // R1-C.1E: user_confidence non-numeric — reject (amendment #3)
+        rejected.push({ field: d.field, value: d.value, reason: "USER_CONFIDENCE_NOT_NUMERIC" });
+        continue;
+      }
       accepted[d.field] = mappedValue;
+      evidenceLog.push({
+        evidence_id: crypto.randomUUID(),
+        source_type: "conversation",
+        source_reference: `Discovery conversation — ${d.field}`,
+        content: d.value,
+        source_text: d.source_text || "",
+        recorded_date: today
+      });
     }
   }
   if (goalsList.length > 0) {
     accepted.goals = goalsList;
+  }
+  if (evidenceLog.length > 0) {
+    accepted.evidence_log = evidenceLog;
   }
   return { new_discoveries: accepted, rejected };
 }
@@ -289,7 +341,8 @@ function buildProfileContext(profile: any): string {
   if (isSubstantive(profile.professional_identity)) parts.push(`- Professional identity: ${profile.professional_identity}`);
   if (isSubstantive(profile.personal_context)) parts.push(`- Current circumstances: ${profile.personal_context}`);
   if (Array.isArray(profile.goals) && profile.goals.length > 0) parts.push(`- Goals: ${profile.goals.join("; ")}`);
-  if (profile.user_confidence !== null && profile.user_confidence !== undefined) parts.push(`- Self-reported confidence: ${profile.user_confidence}/10`);
+  // R1-C.1E: Only render numeric confidence, not qualitative strings
+  if (typeof profile.user_confidence === "number") parts.push(`- Self-reported confidence: ${profile.user_confidence}/10`);
   return parts.length > 0 ? parts.join("\n") : "- No profile content yet — you are still getting to know this person.";
 }
 
@@ -817,6 +870,15 @@ Deno.serve(async (req) => {
       "   - uncertain: weak inference or guess\n" +
       "4. Include the user's actual words as source_text for each discovery\n" +
       "5. Map each discovery to a UserProfile field (e.g., professional_identity, service_branch, service_history, personal_context, goals, operational_context, user_confidence)\n\n" +
+      "R1-C.1E EXTRACTION DOCTRINE:\n" +
+      "6. DECOMPOSITION: If the user's statement contains multiple pieces of information, decompose it into separate candidate discoveries. Each atomic fact gets its own entry with its own source_text (the user's actual words for that specific fact). Do not combine unrelated facts into a single discovery.\n" +
+      "7. STRUCTURED VALUES: For service_history and operational_context, use structured_value (an object) instead of value (a string). Only populate properties the user actually mentioned. Leave unmentioned properties empty. Do not infer or enrich.\n" +
+      "   - service_history structured_value: { role, responsibilities, achievements, leadership_scope } — only fields the user stated\n" +
+      "   - operational_context structured_value: { factor, description } — factor is the category, description is what they said\n" +
+      "8. PROVENANCE: Every structured atomic fact must be directly entailed by its source_text. Restructuring and faithful paraphrase are permitted. Introduction of new factual content is prohibited.\n" +
+      "9. FIELD MAPPING:\n" +
+      "   - professional_identity: The user's trade, role, or professional self-description. NOT what they lack or haven't done. 'I'm a welder' → professional_identity. 'I don't have civilian network experience' → NOT professional_identity.\n" +
+      "   - user_confidence: Extract as a number ONLY if the user explicitly stated a number or directly equivalent numeric expression (e.g., 'I'd say 7 out of 10', 'maybe 8'). Do NOT convert qualitative language ('pretty confident', 'not sure') into a number. If qualitative, do not extract a user_confidence value.\n\n" +
       "Also classify:\n" +
       "- The user's conversational intent\n" +
       "- Whether this is an explicit confirmation/rejection (only if unambiguous)\n" +
@@ -834,11 +896,12 @@ Deno.serve(async (req) => {
       properties: {
         candidate_discoveries: { type: "array", items: { type: "object", properties: {
           field: { type: "string", description: "UserProfile field name" },
-          value: { type: "string", description: "Extracted value" },
+          value: { type: "string", description: "Extracted value (for simple fields)" },
+          structured_value: { type: "object", description: "Structured value for service_history ({role, responsibilities, achievements, leadership_scope}) or operational_context ({factor, description}). Only populate properties the user stated." },
           source_type: { type: "string", enum: ["direct_statement", "reasonable_interpretation", "uncertain"] },
           source_text: { type: "string", description: "The user's actual words that led to this extraction" },
           confidence: { type: "string", enum: ["high", "moderate", "low"] }
-        }, required: ["field", "value", "source_type", "source_text", "confidence"] } },
+        }, required: ["field", "source_type", "source_text", "confidence"] } },
         intent: { type: "string", enum: ["answering", "correcting", "asking_question", "seeking_reassurance", "expressing_frustration", "sharing_milestone", "asking_orientation", "other"] },
         user_response_type: { type: "string", enum: ["answering", "correcting", "confirming", "rejecting", "none"], description: "Only confirming if explicit unambiguous affirmation" },
         interpretation_confidence: { type: "string", enum: ["high", "moderate", "low"] },
@@ -1274,11 +1337,11 @@ Deno.serve(async (req) => {
         ? "CLARIFICATION_PATH"
         : g && m.no_discoveries
         ? "NO_DISCOVERIES"
-        : "R1-C.1D_GENERATED",
+        : "R1-C.1E_GENERATED",
       companion_core_version: COMPANION_CORE_VERSION,
       _internal: {
         validation_decisions: {
-          gate: "DIRECT_STATEMENT_HIGH_CONFIDENCE_ONLY",
+          gate: "R1-C.1E_DIRECT_STATEMENT_HIGH_CONFIDENCE_NO_SKIP",
           accepted_fields: Object.keys(h),
           rejected: m.rejected_discoveries
         },

@@ -1,6 +1,7 @@
 // ============================================================
 // companionCore — Shared Companion Domain Logic
-// R1-C.1B-E2R: Lifecycle regression fix (v1.1.0)
+// R1-C.1E: Natural Evidence Capture + Conversational Sufficiency
+// Packet 1 + Packet 2 changes applied
 //
 // ONE deterministic Understanding implementation.
 // TWO authenticated entry points (companionService + smudgeOrchestrator).
@@ -12,7 +13,7 @@
 // Persistence is performed via a narrow capability callback supplied by the wrapper.
 // ============================================================
 
-export const COMPANION_CORE_VERSION = "1.1.0";
+export const COMPANION_CORE_VERSION = "1.2.0";
 
 // ─── Serialization Adapters ───
 
@@ -22,8 +23,6 @@ export function parseJSON(value: any, fallback: any = undefined): any {
   try { return JSON.parse(value); } catch { return fallback !== undefined ? fallback : value; }
 }
 
-// R1-C.1C-F: Numeric-to-string coercion for schema fields that require string persistence.
-// The Base44 SDK rejects numeric values for fields stored as strings (user_confidence, years_served).
 const STRING_PERSIST_FIELDS = new Set(["user_confidence", "years_served"]);
 
 export function serializeForPersistence(data: any): any {
@@ -59,7 +58,11 @@ const AREA_PRIORITY = [
 
 const MIN_SUBSTANCE = 15;
 
-// ─── Substance helpers ───
+// ─── R1-C.1E: Field-appropriate substance tests ───
+
+function hasAnyValue(v: any): boolean {
+  return v !== null && v !== undefined && typeof v === 'string' && v.trim().length >= 2;
+}
 
 function hasSubstance(v: string | null | undefined): boolean {
   return !!v && v.trim().length >= MIN_SUBSTANCE;
@@ -73,6 +76,60 @@ function hasArrSubstance(arr: any[] | null | undefined): boolean {
   });
 }
 
+// ─── R1-C.1E: Array merge helpers (enrichment, not replacement) ───
+
+function mergeServiceHistory(existing: any[], newEntries: any[]): any[] {
+  const merged = [...existing];
+  for (const newEntry of newEntries) {
+    const matchIdx = merged.findIndex(e =>
+      e.role && newEntry.role &&
+      (e.role.toLowerCase().includes(newEntry.role.toLowerCase()) ||
+       newEntry.role.toLowerCase().includes(e.role.toLowerCase())));
+    if (matchIdx >= 0) {
+      for (const key of ['responsibilities', 'achievements', 'leadership_scope', 'role']) {
+        if (!hasAnyValue(merged[matchIdx][key]) && hasAnyValue(newEntry[key])) {
+          merged[matchIdx][key] = newEntry[key];
+        } else if (!hasSubstance(merged[matchIdx][key]) && hasSubstance(newEntry[key])) {
+          merged[matchIdx][key] = newEntry[key];
+        }
+      }
+    } else {
+      merged.push(newEntry);
+    }
+  }
+  return merged;
+}
+
+function mergeOperationalContext(existing: any[], newEntries: any[]): any[] {
+  const merged = [...existing];
+  for (const newEntry of newEntries) {
+    const matchIdx = merged.findIndex(e =>
+      e.factor && newEntry.factor &&
+      e.factor.toLowerCase() === newEntry.factor.toLowerCase());
+    if (matchIdx >= 0) {
+      if (hasSubstance(newEntry.description) &&
+          !merged[matchIdx].description.includes(newEntry.description)) {
+        merged[matchIdx].description += `; ${newEntry.description}`;
+      }
+    } else {
+      merged.push(newEntry);
+    }
+  }
+  return merged;
+}
+
+function mergeGoals(existing: any[], newEntries: any[]): any[] {
+  const combined = [...existing, ...newEntries];
+  return combined.filter((g, i, arr) =>
+    arr.findIndex(x => x.toLowerCase() === g.toLowerCase()) === i);
+}
+
+function preserveIfSubstantive(existing: any, newVal: any, isCorrecting: boolean): any {
+  if (isCorrecting) return newVal ?? existing;
+  if (hasSubstance(existing)) return existing;
+  return newVal ?? existing;
+}
+
 // ─── Area assessment ───
 
 interface AreaAssessment { area: string; has_substance: boolean; score: number; notes: string; }
@@ -81,22 +138,23 @@ function assessAreas(p: any): AreaAssessment[] {
   return [
     {
       area: 'Who are you?',
-      has_substance: !!p.service_branch && !!p.rank && hasSubstance(p.professional_identity),
-      score: (!!p.service_branch && !!p.rank ? 7 : 0) + (hasSubstance(p.professional_identity) ? 8 : 0),
-      notes: [p.service_branch && p.rank ? 'Branch and rank on file.' : 'Missing branch/rank.',
+      has_substance: hasAnyValue(p.service_branch) && hasAnyValue(p.rank) && hasSubstance(p.professional_identity),
+      score: (hasAnyValue(p.service_branch) && hasAnyValue(p.rank) ? 7 : 0) + (hasSubstance(p.professional_identity) ? 8 : 0),
+      notes: [hasAnyValue(p.service_branch) && hasAnyValue(p.rank) ? 'Branch and rank on file.' : 'Missing branch/rank.',
               hasSubstance(p.professional_identity) ? 'Professional identity captured.' : 'Identity narrative not yet explored.'].join(' ').trim()
     },
     {
       area: 'What have you done?',
       has_substance: hasArrSubstance(p.service_history) && (p.service_history || []).some((h: any) =>
-        hasSubstance(h.responsibilities) || hasSubstance(h.achievements) || hasSubstance(h.leadership_scope)),
+        hasAnyValue(h.role) || hasSubstance(h.responsibilities) || hasSubstance(h.achievements) || hasSubstance(h.leadership_scope)),
       score: (() => {
         if (!p.service_history?.length) return 0;
-        const rich = p.service_history.filter((h: any) => hasSubstance(h.responsibilities) || hasSubstance(h.achievements) || hasSubstance(h.leadership_scope));
+        const rich = p.service_history.filter((h: any) =>
+          hasAnyValue(h.role) || hasSubstance(h.responsibilities) || hasSubstance(h.achievements) || hasSubstance(h.leadership_scope));
         return Math.min(15, 5 + rich.length * 5);
       })(),
       notes: p.service_history?.length
-        ? `${p.service_history.length} role(s) recorded, ${p.service_history.filter((h: any) => hasSubstance(h.responsibilities) || hasSubstance(h.achievements) || hasSubstance(h.leadership_scope)).length} with substantive detail.`
+        ? `${p.service_history.length} role(s) recorded, ${p.service_history.filter((h: any) => hasAnyValue(h.role) || hasSubstance(h.responsibilities) || hasSubstance(h.achievements) || hasSubstance(h.leadership_scope)).length} with substantive detail.`
         : 'No service history recorded yet.'
     },
     {
@@ -119,9 +177,9 @@ function assessAreas(p: any): AreaAssessment[] {
     },
     {
       area: 'How well do we understand?',
-      has_substance: p.user_confidence !== null && p.user_confidence !== undefined,
-      score: (p.user_confidence !== null && p.user_confidence !== undefined) ? 10 : 0,
-      notes: (p.user_confidence !== null && p.user_confidence !== undefined) ? `User self-reported confidence: ${p.user_confidence}/10.` : 'User confidence not yet assessed.'
+      has_substance: p.user_confidence !== null && p.user_confidence !== undefined && typeof p.user_confidence === 'number',
+      score: (p.user_confidence !== null && p.user_confidence !== undefined && typeof p.user_confidence === 'number') ? 10 : 0,
+      notes: (p.user_confidence !== null && p.user_confidence !== undefined && typeof p.user_confidence === 'number') ? `User self-reported confidence: ${p.user_confidence}/10.` : 'User confidence not yet assessed.'
     },
   ];
 }
@@ -136,7 +194,16 @@ function calcConfidence(areas: AreaAssessment[], confirmed: boolean) {
   return { overall_score: overall, rating };
 }
 
-// ─── Reflection content generator ───
+// ─── Reflection content generator (R1-C.1E: gap sections added) ───
+
+const AREA_LABELS: Record<string, string> = {
+  'Who are you?': 'who you are',
+  'What have you done?': 'what you\'ve done',
+  'Where are you now?': 'where you are now',
+  'Where are you going?': 'where you\'re heading',
+  'What influences your journey?': 'what\'s influencing your decisions',
+  'How well do we understand?': 'how confident you\'re feeling',
+};
 
 function generateReflectionContent(profile: any, areas: AreaAssessment[]): string {
   const sections: string[] = [];
@@ -154,13 +221,20 @@ function generateReflectionContent(profile: any, areas: AreaAssessment[]): strin
     sections.push(`WHERE THEY'RE GOING: ${profile.goals.join('; ')}`);
   if (get('What influences your journey?')?.has_substance && profile.operational_context?.length)
     sections.push(`INFLUENCING FACTORS: ${profile.operational_context.map((f: any) => `${f.factor}: ${f.description}`).join('; ')}`);
-  if (get('How well do we understand?')?.has_substance)
+  if (get('How well do we understand?')?.has_substance && typeof profile.user_confidence === 'number')
     sections.push(`USER CONFIDENCE: ${profile.user_confidence}/10. Assessment confidence: ${profile.assessment_confidence?.overall_score || 'N/A'}/100 (${profile.assessment_confidence?.rating || 'N/A'}).`);
+
+  // R1-C.1E: Missing evidence visibly missing in POP (Cipher #2)
+  for (const area of areas) {
+    if (!area.has_substance) {
+      sections.push(`NOT YET DISCUSSED: We haven't talked much about ${AREA_LABELS[area.area] || area.area.toLowerCase()} yet. That's fine — we can come back to it if it becomes relevant.`);
+    }
+  }
 
   return sections.join('\n\n');
 }
 
-// ─── Flow guidance (v1.2 — enriched with companion behaviour signals) ───
+// ─── Flow guidance ───
 
 type ConversationMode = 'EXPLORING' | 'REFLECTING' | 'CONFIRMING' | 'CONFIRMED' | 'RE_EXPLORING';
 
@@ -208,26 +282,10 @@ function generateFlowGuidance(
   }
 
   if (withSubstance.length > 0 && withSubstance.length < 6 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
-    notes.push(`Areas already with substance: ${withSubstance.join(', ')}. Don't re-explore these unless the user voluntarily expands. Move to missing areas: ${missing.join(', ')}.`);
+    notes.push(`${withSubstance.length} of 6 areas have substance. The user may be ready to reflect on what they've shared, even if some areas haven't been explored. If they signal they want to wrap up or move on, respect that.`);
   }
 
-  if (withSubstance.length >= 2 && withSubstance.length < 6 && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
-    notes.push(`MILESTONE: ${withSubstance.length} areas now have substance. If a natural moment arises, offer a brief reflection of what you understand so far. Don't force it.`);
-  }
-
-  if (allSix && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
-    notes.push("Reflect what you genuinely understand, not just what's stored. If something feels thin even though it has 'substance', say so honestly.");
-  }
-
-  if (mode === 'CONFIRMING') {
-    notes.push("The operational picture has been presented. Await the user's explicit confirmation before proceeding. If they correct or add, return to exploring.");
-  }
-
-  if (mode === 'CONFIRMED') {
-    notes.push('Picture confirmed. The user has agreed this is them. Phase Three (Evaluate) can begin when ready.');
-  }
-
-  if (profile.user_confidence !== null && profile.user_confidence < 4 && mode !== 'CONFIRMED') {
+  if (typeof profile.user_confidence === 'number' && profile.user_confidence < 4 && mode !== 'CONFIRMED') {
     notes.push('LOW CONFIDENCE FLAG: User self-reported confidence is below 4/10. Be extra careful not to push. Prioritise psychological safety over data collection.');
   }
 
@@ -249,49 +307,50 @@ function generateFlowGuidance(
 // ─── Companion Core ───
 
 export interface CompanionCoreInput {
-  profile: any;              // Already-authorised, DESERIALISED profile
-  currentMode: string;       // EXPLORING | REFLECTING | CONFIRMING | CONFIRMED | RE_EXPLORING
-  newDiscoveries?: any;     // Optional discoveries to merge
-  userResponseType: string;  // answering | correcting | confirming | rejecting
-  persist?: (profileId: string, payload: any) => Promise<any>;  // Narrow persistence capability
+  profile: any;
+  currentMode: string;
+  newDiscoveries?: any;
+  userResponseType: string;
+  persist?: (profileId: string, payload: any) => Promise<any>;
 }
 
 export interface CompanionCoreOutput {
-  mergedProfile: any;       // Profile after processing (native structures)
-  engineResult: any;         // Assessment areas, missing, ready_for_confirmation, confidence
-  mode: string;              // Updated conversation mode
-  guidance: any;             // Flow guidance + behavioural notes
-  session: any;              // Session context
+  mergedProfile: any;
+  engineResult: any;
+  mode: string;
+  guidance: any;
+  session: any;
   companionCoreVersion: string;
 }
 
 export async function companionCore(input: CompanionCoreInput): Promise<CompanionCoreOutput> {
   const { profile, currentMode, newDiscoveries, userResponseType, persist } = input;
 
-  // ─── Assess areas BEFORE processing (for checkpoint detection) ───
   const previousAreas = newDiscoveries && Object.keys(newDiscoveries).length > 0
     ? assessAreas(profile)
     : null;
 
-  // ─── Step 1: If new discoveries provided, process and persist ───
   let updatedProfile = profile;
   let engineResult: any = null;
 
   if (newDiscoveries && Object.keys(newDiscoveries).length > 0) {
+    const isCorrecting = userResponseType === 'correcting';
+
     const merged = {
       full_name: newDiscoveries.full_name ?? profile.full_name,
       contact_email: newDiscoveries.contact_email ?? profile.contact_email,
       service_branch: newDiscoveries.service_branch ?? profile.service_branch,
       rank: newDiscoveries.rank ?? profile.rank,
       years_served: newDiscoveries.years_served ?? profile.years_served,
-      professional_identity: newDiscoveries.professional_identity ?? profile.professional_identity,
-      service_history: newDiscoveries.service_history?.length ? newDiscoveries.service_history : profile.service_history || [],
-      personal_context: newDiscoveries.personal_context ?? profile.personal_context,
-      goals: newDiscoveries.goals?.length ? newDiscoveries.goals : profile.goals || [],
-      operational_context: newDiscoveries.operational_context?.length ? newDiscoveries.operational_context : profile.operational_context || [],
-      user_confidence: newDiscoveries.user_confidence !== undefined ? newDiscoveries.user_confidence : profile.user_confidence,
-      // R1-C.1B-E2R FIX: Confirmation guard — operational_picture_confirmed can only be set true
-      // when the profile is ALREADY in CONFIRMING. Prevents EXPLORING-origin confirmation.
+      professional_identity: preserveIfSubstantive(profile.professional_identity, newDiscoveries.professional_identity, isCorrecting),
+      service_history: mergeServiceHistory(profile.service_history || [], newDiscoveries.service_history || []),
+      personal_context: preserveIfSubstantive(profile.personal_context, newDiscoveries.personal_context, isCorrecting),
+      goals: mergeGoals(profile.goals || [], newDiscoveries.goals || []),
+      operational_context: mergeOperationalContext(profile.operational_context || [], newDiscoveries.operational_context || []),
+      user_confidence: (newDiscoveries.user_confidence !== undefined && typeof newDiscoveries.user_confidence === 'number')
+        ? newDiscoveries.user_confidence
+        : profile.user_confidence,
+      evidence_log: [...(profile.evidence_log || []), ...(newDiscoveries.evidence_log || [])],
       operational_picture_confirmed: userResponseType === 'rejecting'
         ? false
         : (userResponseType === 'confirming' && profile.tos_phase === 'CONFIRMING' ? true : (profile.operational_picture_confirmed ?? false)),
@@ -303,16 +362,14 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
     const minUnderstanding = ['Who are you?', 'What have you done?', 'Where are you now?', 'Where are you going?']
       .every(name => areas.find(a => a.area === name)!.has_substance);
 
-    // R1-C.1B-E2R FIX: Canonical lifecycle terminology (EXPLORING/CONFIRMING, not Discover/Understand)
     let newPhase = profile.tos_phase;
     if (minUnderstanding && profile.tos_phase === 'EXPLORING') newPhase = 'CONFIRMING';
 
     const userConfirmed = merged.operational_picture_confirmed === true;
     const readyForConfirmation = allCoreSubstantive && understandingSubstantive;
 
-    // R1-C.1B-E2R FIX: CONFIRMING → CONFIRMED transition with explicit guard.
-    // Profile must ALREADY be in CONFIRMING. EXPLORING-origin cannot reach CONFIRMED.
-    if (userResponseType === 'confirming' && userConfirmed && readyForConfirmation && profile.tos_phase === 'CONFIRMING') {
+    // R1-C.1E: Confirmation gate — no area-count requirement (Cipher #2)
+    if (userResponseType === 'confirming' && userConfirmed && profile.tos_phase === 'CONFIRMING') {
       newPhase = 'CONFIRMED';
     }
 
@@ -328,7 +385,6 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
       updatedProfile = await persist(profile.id, persistencePayload);
       updatedProfile = deserializeProfile(updatedProfile);
     } else {
-      // No persistence capability — use merged data in native form
       updatedProfile = {
         ...merged,
         id: profile.id,
@@ -341,17 +397,14 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
       areas,
       missing_areas: areas.filter(a => !a.has_substance).map(a => a.area),
       ready_for_confirmation: readyForConfirmation,
-      can_proceed: userConfirmed && readyForConfirmation,
+      can_proceed: userConfirmed && profile.tos_phase === 'CONFIRMING',
       assessment_confidence: confidence,
     };
   }
 
-  // ─── Step 2: Determine conversation mode ───
   let mode: ConversationMode = currentMode as ConversationMode;
 
   if (engineResult) {
-    // R1-C.1B-E2R FIX: CONFIRMED mode requires profile was ALREADY in CONFIRMING.
-    // EXPLORING-origin interaction MUST NOT reach CONFIRMED in the same call.
     if (userResponseType === 'confirming' && engineResult.can_proceed && profile.tos_phase === 'CONFIRMING') {
       mode = 'CONFIRMED';
     } else if (userResponseType === 'rejecting' || userResponseType === 'correcting') {
@@ -363,18 +416,16 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
     }
   }
 
-  // ─── Step 3: Generate flow guidance ───
   const currentAreas = engineResult?.areas || assessAreas(updatedProfile);
   const guidance = generateFlowGuidance(mode, currentAreas, updatedProfile, previousAreas);
 
-  // ─── Step 4: Build session context ───
   const sessionContext = {
     mode,
     areas_explored: currentAreas.filter((a: any) => a.has_substance).map((a: any) => a.area),
     areas_outstanding: currentAreas.filter((a: any) => !a.has_substance).map((a: any) => a.area),
     profile_phase: updatedProfile.tos_phase,
     assessment_confidence: updatedProfile.assessment_confidence?.rating || 'LOW',
-    user_confidence: updatedProfile.user_confidence,
+    user_confidence: typeof updatedProfile.user_confidence === 'number' ? updatedProfile.user_confidence : null,
     confirmed: updatedProfile.operational_picture_confirmed === true,
   };
 
