@@ -917,7 +917,19 @@ Deno.serve(async (req) => {
         candidate_discoveries: { type: "array", items: { type: "object", properties: {
           field: { type: "string", description: "UserProfile field name" },
           value: { type: "string", description: "Extracted value (for simple fields)" },
-          structured_value: { type: "object", description: "Structured value for service_history ({role, responsibilities, achievements, leadership_scope}) or operational_context ({factor, description}). Only populate properties the user stated." },
+          structured_value: {
+            type: "object",
+            description: "Structured value for service_history or operational_context. Populate ONLY properties the user stated. Omit unmentioned properties entirely.",
+            properties: {
+              role: { type: "string", description: "The user's stated role/trade (e.g. 'Metalsmith')" },
+              responsibilities: { type: "string", description: "What the user said they did (e.g. 'welding and fabrication')" },
+              achievements: { type: "string", description: "Stated achievements" },
+              leadership_scope: { type: "string", description: "Stated leadership responsibility" },
+              factor: { type: "string", description: "Category for operational_context (e.g. 'operational deployments')" },
+              description: { type: "string", description: "What the user said (e.g. 'two tours in Iraq')" }
+            },
+            additionalProperties: false
+          },
           source_type: { type: "string", enum: ["direct_statement", "reasonable_interpretation", "uncertain"] },
           source_text: { type: "string", description: "The user's actual words that led to this extraction" },
           confidence: { type: "string", enum: ["high", "moderate", "low"] }
