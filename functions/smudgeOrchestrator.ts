@@ -260,7 +260,7 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
   const today = new Date().toISOString().split('T')[0];
 
   for (const d of discoveries) {
-    const field = FIELD_ALIASES[field] || field;
+    const field = FIELD_ALIASES[d.field] || d.field;
     if (!ACCEPTABLE_SOURCE_TYPES.includes(d.source_type)) {
       rejected.push({ field: field, value: d.value, reason: "SOURCE_TYPE_NOT_DIRECT_STATEMENT" });
       continue;
