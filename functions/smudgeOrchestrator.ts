@@ -357,6 +357,116 @@ function safeUserResponseType(raw: string, mode: string): { safe: string; downgr
 }
 
 // --- CORRECTION 3: Build profile content summary for generation context ---
+// ==================================================
+// R1-C.1E PACKET 3: CONVERSATIONAL SUFFICIENCY GATE
+// ==================================================
+
+const SUFFICIENCY_FLOOR = {
+  minAreasWithSubstance: 2,
+  coreAreas: ['Who are you?', 'What have you done?', 'Where are you now?', 'Where are you going?'],
+  requiresUserObjective: true,
+};
+
+function checkSufficiencyFloor(areas: any[], userObjective: string): boolean {
+  const areasWithSubstance = areas.filter(a => a.has_substance);
+  if (areasWithSubstance.length < SUFFICIENCY_FLOOR.minAreasWithSubstance) return false;
+  if (SUFFICIENCY_FLOOR.requiresUserObjective && (!userObjective || userObjective.trim().length === 0)) return false;
+  return true;
+}
+
+const SUFFICIENCY_SCHEMA = {
+  type: "object",
+  properties: {
+    sufficient: { type: "boolean", description: "True if you understand enough of this person to reflect your understanding back usefully and honestly" },
+    reason: { type: "string", description: "One sentence explaining why sufficient or not sufficient" },
+    missing: { type: "array", items: { type: "string" }, description: "Specific gaps if not sufficient. Empty array if sufficient." }
+  },
+  required: ["sufficient", "reason", "missing"]
+};
+
+const SUFFICIENCY_PROMPT = `You are evaluating whether a companion AI (Smudge) has gathered sufficient evidence to reflect its understanding of a service leaver back to them.
+
+Sufficient means: "I understand enough of this person, from evidence they have actually given me, to reflect my understanding back usefully and honestly."
+
+It does NOT mean:
+- All six discovery areas must be populated
+- The profile must be complete
+- A career recommendation is possible
+- Missing information should be fabricated
+
+If sufficient, the companion will offer a Reflection Moment ("Can I tell you what I'm hearing?") — a summary of what they understand, including gaps.
+
+If not sufficient, the companion will continue exploring the most relevant gap.
+
+Evaluate based on the ACTUAL EVIDENCE accumulated — not on field counts or area completion.
+
+Profile content:
+{PROFILE_CONTENT}
+
+Areas with substance:
+{AREAS_WITH_SUBSTANCE}
+
+Areas without substance:
+{AREAS_WITHOUT_SUBSTANCE}
+
+Conversation state:
+- Topics covered: {TOPICS_COVERED}
+- Topics closed: {TOPICS_CLOSED}
+- User's stated objective: {USER_OBJECTIVE}
+- Recent conversation (last 4 exchanges):
+{RECENT_CONTEXT}
+
+Return your judgment as JSON: { sufficient: boolean, reason: string, missing: string[] }`;
+
+async function runSufficiencyGate(
+  mergedProfile: any,
+  engineResult: any,
+  convState: any,
+  recentContext: any[]
+): Promise<{ sufficient: boolean; reason: string; missing: string[] } | null> {
+  const areasWithSubstance = (engineResult.areas || []).filter((a: any) => a.has_substance).map((a: any) => a.area);
+  const areasWithoutSubstance = (engineResult.areas || []).filter((a: any) => !a.has_substance).map((a: any) => a.area);
+
+  const recentStr = (recentContext && Array.isArray(recentContext) && recentContext.length > 0)
+    ? recentContext.slice(-4).map((m: any) => `${m.role === "user" ? "User" : "Smudge"}: ${m.text}`).join("\n")
+    : "No recent context available.";
+
+  const topicsCovered = Array.isArray(convState?.topics_covered) ? convState.topics_covered.join(", ") : "none";
+  const topicsClosed = Array.isArray(convState?.topics_closed) ? convState.topics_closed.join(", ") : "none";
+  const userObjective = convState?.user_objective || "not yet stated";
+
+  const prompt = SUFFICIENCY_PROMPT
+    .replace("{PROFILE_CONTENT}", buildProfileContext(mergedProfile))
+    .replace("{AREAS_WITH_SUBSTANCE}", areasWithSubstance.join(", ") || "none")
+    .replace("{AREAS_WITHOUT_SUBSTANCE}", areasWithoutSubstance.join(", ") || "none")
+    .replace("{TOPICS_COVERED}", topicsCovered)
+    .replace("{TOPICS_CLOSED}", topicsClosed)
+    .replace("{USER_OBJECTIVE}", userObjective)
+    .replace("{RECENT_CONTEXT}", recentStr);
+
+  try {
+    const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt,
+      response_json_schema: SUFFICIENCY_SCHEMA
+    });
+
+    if (result && typeof result === "object" && typeof result.sufficient === "boolean") {
+      // Handle anomalous state: not sufficient but no missing items
+      if (!result.sufficient && (!result.missing || result.missing.length === 0)) {
+        return { sufficient: false, reason: result.reason || "Anomalous: not sufficient but no gaps identified", missing: ["SUFFICIENCY_ANOMALOUS"] };
+      }
+      return {
+        sufficient: result.sufficient,
+        reason: result.reason || "",
+        missing: Array.isArray(result.missing) ? result.missing : []
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function buildProfileContext(profile: any): string {
   const parts: string[] = [];
   if (isSubstantive(profile.service_branch)) parts.push(`- Service: ${profile.service_branch}`);
@@ -462,6 +572,16 @@ function buildGenerationPrompt(ctx: any): string {
   if (ctx.conversation_awareness) lines.push(ctx.conversation_awareness);
   if (ctx.recent_context_for_gen) lines.push(ctx.recent_context_for_gen);
   lines.push(`- Areas you haven't explored yet (for your awareness, not a checklist to work through): ${ctx.areas_outstanding.length > 0 ? ctx.areas_outstanding.join(", ") : "all areas explored"}`);
+  // R1-C.1E PACKET 3: Sufficiency gate context
+  if (ctx.sufficiency_orchestration === "SUFFICIENT" || ctx.ready_to_confirm) {
+    lines.push("- SUFFICIENCY: You now understand enough of this person to reflect your understanding back. Offer a Reflection Moment: "Can I tell you what I'm hearing?" Summarise what you know, including what you don't yet know (gaps are fine). Do not fabricate. Let them confirm or correct.");
+  } else if (ctx.sufficiency_orchestration === "NOT_SUFFICIENT" && ctx.sufficiency_missing && ctx.sufficiency_missing.length > 0) {
+    lines.push(`- SUFFICIENCY: Not yet enough to reflect back. The most relevant gap is: ${ctx.sufficiency_missing.join(", ")}. Reason: ${ctx.sufficiency_reason || "not specified"}. Move the conversation naturally toward this gap — do not announce it as a task.`);
+  } else if (ctx.sufficiency_orchestration === "SUFFICIENCY_ANOMALOUS") {
+    lines.push("- SUFFICIENCY: Anomalous state — not sufficient but no specific gaps identified. Continue exploring naturally. Do not force advancement.");
+  } else if (ctx.sufficiency_orchestration === "FLOOR_NOT_MET") {
+    lines.push("- SUFFICIENCY: Still early in the conversation. Continue building understanding naturally.");
+  }
   lines.push(`- Whether understanding is complete: ${ctx.confirmed ? "yes, they confirmed it" : ctx.ready_to_confirm ? "ready to ask if they confirm" : "not yet — still building"}`);
   lines.push(`- Stage change: ${formatLifecycleTransition(ctx.lifecycle_transition)}`);
   if (ctx.clarification_needed) lines.push(`- Clarification needed: ${ctx.clarification_needed}`);
@@ -1169,7 +1289,7 @@ Deno.serve(async (req) => {
         m.lifecycle_transition = m.state_changed ? `${currentPhase} → ${companionPhase}` : null;
         m.areas_explored = T.guidance?.areas_with_substance || areas_explored;
         m.areas_outstanding = T.guidance?.areas_missing || areas_outstanding;
-        m.ready_to_reflect = T.engineResult?.ready_for_confirmation || false;
+        m.ready_to_reflect = false; // R1-C.1E Packet 3: driven by sufficiency gate, not checklist
         m.ready_to_confirm = T.session?.mode === "CONFIRMING" || false;
         m.confirmed = T.session?.confirmed === true || companionPhase === "CONFIRMED";
       } catch {
@@ -1187,6 +1307,57 @@ Deno.serve(async (req) => {
     const { derived: derivedConvState, is_returning: _ir } = deriveConversationState(
       convState, interpretation, T, currentPhase
     );
+
+    // ==================================================
+    // 11b. SUFFICIENCY GATE (R1-C.1E PACKET 3)
+    // Deterministic floor → LLM sufficiency judgment → reason-informed behaviour
+    // ==================================================
+
+    let sufficiencyResult: { sufficient: boolean; reason: string; missing: string[] } | null = null;
+    let sufficiencyOrchestration = "SKIPPED";
+
+    if (currentPhase === "EXPLORING" && T?.engineResult && !m.companion_error) {
+      const areasWithSubstance = (T.engineResult.areas || []).filter((a: any) => a.has_substance).map((a: any) => a.area);
+      const userObjective = derivedConvState?.user_objective || convState?.user_objective || "";
+
+      const floorMet = checkSufficiencyFloor(T.engineResult.areas || [], userObjective);
+
+      if (!floorMet) {
+        sufficiencyOrchestration = "FLOOR_NOT_MET";
+      } else {
+        sufficiencyResult = await runSufficiencyGate(
+          T.mergedProfile || profile,
+          T.engineResult,
+          convState,
+          recent_context
+        );
+
+        if (sufficiencyResult?.sufficient === true) {
+          sufficiencyOrchestration = "SUFFICIENT";
+          // Transition EXPLORING → CONFIRMING
+          try {
+            await base44.asServiceRole.entities.UserProfile.update(
+              T.mergedProfile.id,
+              { tos_phase: "CONFIRMING" }
+            );
+            m.tos_phase_after = "CONFIRMING";
+            m.state_changed = true;
+            m.lifecycle_transition = "EXPLORING → CONFIRMING";
+            m.ready_to_confirm = true;
+          } catch {
+            sufficiencyOrchestration = "SUFFICIENT_PERSIST_FAILED";
+          }
+        } else if (sufficiencyResult && sufficiencyResult.missing[0] === "SUFFICIENCY_ANOMALOUS") {
+          sufficiencyOrchestration = "SUFFICIENCY_ANOMALOUS";
+          // No forced advancement. Log for diagnostic review.
+        } else if (sufficiencyResult) {
+          sufficiencyOrchestration = "NOT_SUFFICIENT";
+          // Reason and missing passed to generation context
+        } else {
+          sufficiencyOrchestration = "LLM_FAILED";
+        }
+      }
+    }
 
     // ==================================================
     // 12. RESPONSE GENERATION (second LLM call or fallback)
@@ -1231,6 +1402,10 @@ Deno.serve(async (req) => {
       profile_content: buildProfileContext(profile),
       evidence_sufficient: m.ready_to_confirm || m.confirmed,
       authoritative_intent: m.authoritative_intent,
+      // R1-C.1E PACKET 3: sufficiency reason-informed discovery
+      sufficiency_reason: sufficiencyResult?.reason || null,
+      sufficiency_missing: sufficiencyResult?.missing || [],
+      sufficiency_orchestration: sufficiencyOrchestration,
       // R1-C.1D CONVERSATION AWARENESS [C1] [R4]
       conversation_awareness: conversationAwarenessStr,
       recent_context_for_gen: recentContextForGen
@@ -1379,7 +1554,6 @@ Deno.serve(async (req) => {
         engine_result: T.engineResult || null,
         areas_with_substance: T.guidance?.areas_with_substance || [],
         areas_missing: T.guidance?.areas_missing || [],
-        ready_for_confirmation: T.engineResult?.ready_for_confirmation || false,
         lifecycle_transition: m.lifecycle_transition
       } : null,
       recoverable_error: m.companion_error ? "COMPANION_CORE_ERROR" : null,
@@ -1403,6 +1577,12 @@ Deno.serve(async (req) => {
         authoritative_intent: m.authoritative_intent,
         interpretation_intent: interpretation.intent,
         persistence_model: "COMPANION_CORE_NARROW_CALLBACK",
+        sufficiency_gate: {
+          orchestration: sufficiencyOrchestration,
+          sufficient: sufficiencyResult?.sufficient ?? null,
+          reason: sufficiencyResult?.reason ?? null,
+          missing: sufficiencyResult?.missing ?? []
+        },
         conversation_awareness: {
           conv_state_id: convStateId,
           persisted: convStatePersisted,

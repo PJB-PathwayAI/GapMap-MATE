@@ -255,8 +255,8 @@ function generateFlowGuidance(
   const withSubstance = areas.filter(a => a.has_substance).map(a => a.area);
   const missing = areas.filter(a => !a.has_substance).map(a => a.area);
   const nextArea = AREA_PRIORITY.find(name => missing.includes(name)) || null;
-  const allSix = missing.length === 0;
-  const readyToReflect = allSix && (mode === 'EXPLORING' || mode === 'RE_EXPLORING');
+  // R1-C.1E Packet 3: readyToReflect now driven by sufficiency gate, not area-count
+  const readyToReflect = false;
 
   let reflectionContent: string | null = null;
   if (mode === 'REFLECTING' || (readyToReflect && mode !== 'CONFIRMED'))
@@ -312,6 +312,7 @@ export interface CompanionCoreInput {
   newDiscoveries?: any;
   userResponseType: string;
   persist?: (profileId: string, payload: any) => Promise<any>;
+  sufficiencyResult?: { sufficient: boolean; reason: string; missing: string[] } | null;
 }
 
 export interface CompanionCoreOutput {
@@ -324,7 +325,7 @@ export interface CompanionCoreOutput {
 }
 
 export async function companionCore(input: CompanionCoreInput): Promise<CompanionCoreOutput> {
-  const { profile, currentMode, newDiscoveries, userResponseType, persist } = input;
+  const { profile, currentMode, newDiscoveries, userResponseType, persist, sufficiencyResult } = input;
 
   const previousAreas = newDiscoveries && Object.keys(newDiscoveries).length > 0
     ? assessAreas(profile)
@@ -357,16 +358,13 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
     };
 
     const areas = assessAreas(merged);
-    const allCoreSubstantive = areas.slice(0, 5).every(a => a.has_substance);
-    const understandingSubstantive = areas[5].has_substance;
-    const minUnderstanding = ['Who are you?', 'What have you done?', 'Where are you now?', 'Where are you going?']
-      .every(name => areas.find(a => a.area === name)!.has_substance);
-
+    // R1-C.1E Packet 3: allCoreSubstantive/understandingSubstantive removed (checklist gate)
+    // R1-C.1E Packet 3: Sufficiency gate replaces checklist (minUnderstanding removed)
+    // EXPLORING → CONFIRMING is now triggered by the LLM sufficiency judgment (passed from orchestrator)
     let newPhase = profile.tos_phase;
-    if (minUnderstanding && profile.tos_phase === 'EXPLORING') newPhase = 'CONFIRMING';
+    if (sufficiencyResult?.sufficient === true && profile.tos_phase === 'EXPLORING') newPhase = 'CONFIRMING';
 
     const userConfirmed = merged.operational_picture_confirmed === true;
-    const readyForConfirmation = allCoreSubstantive && understandingSubstantive;
 
     // R1-C.1E: Confirmation gate — no area-count requirement (Cipher #2)
     if (userResponseType === 'confirming' && userConfirmed && profile.tos_phase === 'CONFIRMING') {
@@ -396,7 +394,6 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
     engineResult = {
       areas,
       missing_areas: areas.filter(a => !a.has_substance).map(a => a.area),
-      ready_for_confirmation: readyForConfirmation,
       can_proceed: userConfirmed && profile.tos_phase === 'CONFIRMING',
       assessment_confidence: confidence,
     };
@@ -409,10 +406,8 @@ export async function companionCore(input: CompanionCoreInput): Promise<Companio
       mode = 'CONFIRMED';
     } else if (userResponseType === 'rejecting' || userResponseType === 'correcting') {
       mode = 'RE_EXPLORING';
-    } else if (engineResult.ready_for_confirmation && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
-      mode = 'REFLECTING';
-    } else if (mode === 'RE_EXPLORING' && engineResult.missing_areas.length === 0) {
-      mode = 'REFLECTING';
+    } else if (sufficiencyResult?.sufficient === true && (mode === 'EXPLORING' || mode === 'RE_EXPLORING')) {
+      mode = 'CONFIRMING';
     }
   }
 
