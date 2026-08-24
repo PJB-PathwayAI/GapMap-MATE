@@ -246,6 +246,11 @@ function mapDiscoveryValue(field: string, value: string): any {
   return value;
 }
 
+// R1-C.1E: Field aliases — map LLM field names to canonical UserProfile fields
+const FIELD_ALIASES: Record<string, string> = {
+  "name": "full_name",
+};
+
 // R1-C.1E: buildNewDiscoveries — handles structured_value, evidence_log with UUIDs, no SKIP_FIELDS
 function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; rejected: any[] } {
   const accepted: any = {};
@@ -255,17 +260,18 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
   const today = new Date().toISOString().split('T')[0];
 
   for (const d of discoveries) {
+    const field = FIELD_ALIASES[field] || field;
     if (!ACCEPTABLE_SOURCE_TYPES.includes(d.source_type)) {
-      rejected.push({ field: d.field, value: d.value, reason: "SOURCE_TYPE_NOT_DIRECT_STATEMENT" });
+      rejected.push({ field: field, value: d.value, reason: "SOURCE_TYPE_NOT_DIRECT_STATEMENT" });
       continue;
     }
     if (!ACCEPTABLE_CONFIDENCE.includes(d.confidence)) {
-      rejected.push({ field: d.field, value: d.value, reason: "CONFIDENCE_NOT_HIGH" });
+      rejected.push({ field: field, value: d.value, reason: "CONFIDENCE_NOT_HIGH" });
       continue;
     }
 
     // R1-C.1E: Handle structured values for service_history and operational_context
-    if (d.field === "service_history" && d.structured_value && typeof d.structured_value === "object") {
+    if (field === "service_history" && d.structured_value && typeof d.structured_value === "object") {
       if (!accepted.service_history) accepted.service_history = [];
       accepted.service_history.push(d.structured_value);
       evidenceLog.push({
@@ -276,7 +282,7 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
         source_text: d.source_text || "",
         recorded_date: today
       });
-    } else if (d.field === "operational_context" && d.structured_value && typeof d.structured_value === "object") {
+    } else if (field === "operational_context" && d.structured_value && typeof d.structured_value === "object") {
       if (!accepted.operational_context) accepted.operational_context = [];
       accepted.operational_context.push(d.structured_value);
       evidenceLog.push({
@@ -287,7 +293,7 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
         source_text: d.source_text || "",
         recorded_date: today
       });
-    } else if (d.field === "goals") {
+    } else if (field === "goals") {
       goalsList.push(d.value);
       evidenceLog.push({
         evidence_id: crypto.randomUUID(),
@@ -298,17 +304,17 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
         recorded_date: today
       });
     } else {
-      const mappedValue = mapDiscoveryValue(d.field, d.value);
+      const mappedValue = mapDiscoveryValue(field, d.value);
       if (mappedValue === null) {
         // R1-C.1E: user_confidence non-numeric — reject (amendment #3)
-        rejected.push({ field: d.field, value: d.value, reason: "USER_CONFIDENCE_NOT_NUMERIC" });
+        rejected.push({ field: field, value: d.value, reason: "USER_CONFIDENCE_NOT_NUMERIC" });
         continue;
       }
-      accepted[d.field] = mappedValue;
+      accepted[field] = mappedValue;
       evidenceLog.push({
         evidence_id: crypto.randomUUID(),
         source_type: "conversation",
-        source_reference: `Discovery conversation — ${d.field}`,
+        source_reference: `Discovery conversation — ${field}`,
         content: d.value,
         source_text: d.source_text || "",
         recorded_date: today
@@ -872,12 +878,26 @@ Deno.serve(async (req) => {
       "5. Map each discovery to a UserProfile field (e.g., professional_identity, service_branch, service_history, personal_context, goals, operational_context, user_confidence)\n\n" +
       "R1-C.1E EXTRACTION DOCTRINE:\n" +
       "6. DECOMPOSITION: If the user's statement contains multiple pieces of information, decompose it into separate candidate discoveries. Each atomic fact gets its own entry with its own source_text (the user's actual words for that specific fact). Do not combine unrelated facts into a single discovery.\n" +
-      "7. STRUCTURED VALUES: For service_history and operational_context, use structured_value (an object) instead of value (a string). Only populate properties the user actually mentioned. Leave unmentioned properties empty. Do not infer or enrich.\n" +
-      "   - service_history structured_value: { role, responsibilities, achievements, leadership_scope } — only fields the user stated\n" +
+      "7. STRUCTURED VALUES: For service_history and operational_context, use structured_value (an object) instead of value (a string). Only include properties the user actually mentioned. Omit unmentioned properties entirely (do not include them as empty strings or null). Do not infer or enrich.\n" +
+      "   - service_history structured_value: { role, responsibilities, achievements, leadership_scope } — only include properties the user stated\n" +
       "   - operational_context structured_value: { factor, description } — factor is the category, description is what they said\n" +
+      "   FEW-SHOT EXAMPLES for structured_value and decomposition:\n" +
+      "   User: 'I was a Metalsmith in REME for 6 years, mostly doing welding and fabrication'\n" +
+      "     → { field: 'service_branch', value: 'REME', source_type: 'direct_statement', source_text: 'in REME', confidence: 'high' }\n" +
+      "     → { field: 'years_served', value: '6', source_type: 'direct_statement', source_text: 'for 6 years', confidence: 'high' }\n" +
+      "     → { field: 'service_history', structured_value: { role: 'Metalsmith', responsibilities: 'welding and fabrication' }, source_type: 'direct_statement', source_text: 'I was a Metalsmith in REME for 6 years, mostly doing welding and fabrication', confidence: 'high' }\n" +
+      "   User: 'I did two tours in Iraq'\n" +
+      "     → { field: 'operational_context', structured_value: { factor: 'operational deployments', description: 'two tours in Iraq' }, source_type: 'direct_statement', source_text: 'I did two tours in Iraq', confidence: 'high' }\n" +
+      "   User: 'I had lads working under me'\n" +
+      "     → { field: 'service_history', structured_value: { leadership_scope: 'had lads working under me' }, source_type: 'direct_statement', source_text: 'I had lads working under me', confidence: 'high' }\n" +
+      "   User: 'My name is Tom'\n" +
+      "     → { field: 'full_name', value: 'Tom', source_type: 'direct_statement', source_text: 'My name is Tom', confidence: 'high' }\n" +
       "8. PROVENANCE: Every structured atomic fact must be directly entailed by its source_text. Restructuring and faithful paraphrase are permitted. Introduction of new factual content is prohibited.\n" +
       "9. FIELD MAPPING:\n" +
+      "   - full_name: The user's stated name. 'My name is Tom' → full_name: 'Tom'. 'I'm Dave' → full_name: 'Dave'.\n" +
       "   - professional_identity: The user's trade, role, or professional self-description. NOT what they lack or haven't done. 'I'm a welder' → professional_identity. 'I don't have civilian network experience' → NOT professional_identity.\n" +
+      "   - service_branch: The user's stated service branch. 'I was in REME' → service_branch: 'REME'. 'I served in the Royal Engineers' → service_branch: 'Royal Engineers'. 'I was in the Army' → service_branch: 'Army'.\n" +
+      "   - years_served: The user's stated duration of service as a string number. '6 years' → years_served: '6'. '8 years in the Army' → years_served: '8'.\n" +
       "   - user_confidence: Extract as a number ONLY if the user explicitly stated a number or directly equivalent numeric expression (e.g., 'I'd say 7 out of 10', 'maybe 8'). Do NOT convert qualitative language ('pretty confident', 'not sure') into a number. If qualitative, do not extract a user_confidence value.\n\n" +
       "Also classify:\n" +
       "- The user's conversational intent\n" +
@@ -1071,8 +1091,10 @@ Deno.serve(async (req) => {
         m.clarification_needed = "I want to make sure I understand correctly. Could you tell me a bit more about that?";
         g = true;
       } else if (hasNonDirect) {
+        // R1-C.1E F5 FIX: Accepted direct discoveries MUST persist even when
+        // rejected non-direct discoveries exist. Set clarification text but
+        // do NOT set g=true — companionCore runs and persists accepted evidence.
         m.clarification_needed = "Some of what you've said is clear, but I want to understand the rest better. Could you tell me more?";
-        g = true;
       } else if (allDiscoveries.length === 0) {
         const { safe, down } = safeUserResponseType(R, currentPhase);
         R = safe;
