@@ -253,7 +253,7 @@ const FIELD_ALIASES: Record<string, string> = {
 
 // R1-C.1E Close-out: Sanitize structured_value — strip placeholders and empty strings.
 // Unmentioned properties must be genuinely absent, not persisted as "none" or "".
-const PLACEHOLDER_VALUES = new Set(["", "none", "unknown", "not mentioned", "not stated", "n/a", "null", "undefined", "unspecified"]);
+const PLACEHOLDER_VALUES = new Set(["", "none", "unknown", "not mentioned", "not stated", "n/a", "na", "null", "undefined", "unspecified", "not applicable", "not relevant", "nothing", "no", "nil"]);
 function sanitizeStructuredValue(sv: any): any {
   const cleaned: Record<string, any> = {};
   for (const [key, value] of Object.entries(sv)) {
