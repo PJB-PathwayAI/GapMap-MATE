@@ -251,6 +251,20 @@ const FIELD_ALIASES: Record<string, string> = {
   "name": "full_name",
 };
 
+// R1-C.1E Close-out: Sanitize structured_value — strip placeholders and empty strings.
+// Unmentioned properties must be genuinely absent, not persisted as "none" or "".
+const PLACEHOLDER_VALUES = new Set(["", "none", "unknown", "not mentioned", "not stated", "n/a", "null", "undefined", "unspecified"]);
+function sanitizeStructuredValue(sv: any): any {
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(sv)) {
+    if (typeof value === "string" && PLACEHOLDER_VALUES.has(value.toLowerCase().trim())) continue;
+    if (value !== null && value !== undefined && value !== "") {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
+
 // R1-C.1E: buildNewDiscoveries — handles structured_value, evidence_log with UUIDs, no SKIP_FIELDS
 function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; rejected: any[] } {
   const accepted: any = {};
@@ -272,24 +286,28 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
 
     // R1-C.1E: Handle structured values for service_history and operational_context
     if (field === "service_history" && d.structured_value && typeof d.structured_value === "object") {
+      const cleanedSV = sanitizeStructuredValue(d.structured_value);
+      if (Object.keys(cleanedSV).length === 0) continue; // skip empty objects entirely
       if (!accepted.service_history) accepted.service_history = [];
-      accepted.service_history.push(d.structured_value);
+      accepted.service_history.push(cleanedSV);
       evidenceLog.push({
         evidence_id: crypto.randomUUID(),
         source_type: "conversation",
         source_reference: "Discovery conversation — service_history",
-        content: JSON.stringify(d.structured_value),
+        content: JSON.stringify(cleanedSV),
         source_text: d.source_text || "",
         recorded_date: today
       });
     } else if (field === "operational_context" && d.structured_value && typeof d.structured_value === "object") {
+      const cleanedSV = sanitizeStructuredValue(d.structured_value);
+      if (Object.keys(cleanedSV).length === 0) continue; // skip empty objects entirely
       if (!accepted.operational_context) accepted.operational_context = [];
-      accepted.operational_context.push(d.structured_value);
+      accepted.operational_context.push(cleanedSV);
       evidenceLog.push({
         evidence_id: crypto.randomUUID(),
         source_type: "conversation",
         source_reference: "Discovery conversation — operational_context",
-        content: JSON.stringify(d.structured_value),
+        content: JSON.stringify(cleanedSV),
         source_text: d.source_text || "",
         recorded_date: today
       });
