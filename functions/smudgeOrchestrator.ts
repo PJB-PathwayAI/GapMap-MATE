@@ -418,7 +418,7 @@ Conversation state:
 
 Return your judgment as JSON: { sufficient: boolean, reason: string, missing: string[] }`;
 
-async function runSufficiencyGate(
+async function runSufficiencyGate(base44: any,
   mergedProfile: any,
   engineResult: any,
   convState: any,
@@ -574,7 +574,7 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push(`- Areas you haven't explored yet (for your awareness, not a checklist to work through): ${ctx.areas_outstanding.length > 0 ? ctx.areas_outstanding.join(", ") : "all areas explored"}`);
   // R1-C.1E PACKET 3: Sufficiency gate context
   if (ctx.sufficiency_orchestration === "SUFFICIENT" || ctx.ready_to_confirm) {
-    lines.push("- SUFFICIENCY: You now understand enough of this person to reflect your understanding back. Offer a Reflection Moment: "Can I tell you what I'm hearing?" Summarise what you know, including what you don't yet know (gaps are fine). Do not fabricate. Let them confirm or correct.");
+    lines.push("- SUFFICIENCY: You now understand enough of this person to reflect your understanding back. Offer a Reflection Moment: \"Can I tell you what I'm hearing?\" Summarise what you know, including what you don't yet know (gaps are fine). Do not fabricate. Let them confirm or correct.");
   } else if (ctx.sufficiency_orchestration === "NOT_SUFFICIENT" && ctx.sufficiency_missing && ctx.sufficiency_missing.length > 0) {
     lines.push(`- SUFFICIENCY: Not yet enough to reflect back. The most relevant gap is: ${ctx.sufficiency_missing.join(", ")}. Reason: ${ctx.sufficiency_reason || "not specified"}. Move the conversation naturally toward this gap — do not announce it as a task.`);
   } else if (ctx.sufficiency_orchestration === "SUFFICIENCY_ANOMALOUS") {
@@ -1326,6 +1326,7 @@ Deno.serve(async (req) => {
         sufficiencyOrchestration = "FLOOR_NOT_MET";
       } else {
         sufficiencyResult = await runSufficiencyGate(
+          base44,
           T.mergedProfile || profile,
           T.engineResult,
           convState,
