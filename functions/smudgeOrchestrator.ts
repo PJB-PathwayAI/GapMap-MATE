@@ -777,6 +777,346 @@ Write a single clarifying question. Keep it to one sentence.`;
 // MAIN HANDLER
 // ============================================================
 
+
+// ============================================================
+// R1-C.1F PACKET 1: CONVERSATIONAL LIFELINE
+// State-aware conversational handling for post-CONFIRMING states.
+// Architectural invariant: No lifecycle state may disable the
+// companion relationship.
+// No engine invocation. No lifecycle transitions. Conversation only.
+// ============================================================
+
+const STATE_CONTEXT: Record<string, { name: string; description: string; whats_next: string; can_discuss: string }> = {
+  CONFIRMED: {
+    name: "Operational Picture Confirmed",
+    description: "The user has confirmed that Smudge's understanding of who they are, what they've done, and where they are now is accurate. The foundational understanding is established.",
+    whats_next: "The next stage is looking at their capabilities — what they're actually good at, in civilian terms. That's something we can explore together when they're ready. For now, they can ask questions, talk about what we've covered, or just chat.",
+    can_discuss: "What we've talked about so far, what they've established about themselves, questions about the MATE process, what happens next, or just a normal conversation."
+  },
+  EVALUATING: {
+    name: "Evaluating",
+    description: "The user is in the evaluation phase — looking at their capabilities and exploring what options might fit. They may have capability insights and pathway suggestions to consider.",
+    whats_next: "When they feel ready, there's a reflection period — a chance to sit with what they've explored before deciding to take practical action. But there's no rush. They can ask questions, discuss what they've found, or take their time.",
+    can_discuss: "Their capabilities, what civilian roles might fit, what options they're considering, what matters to them, questions about the process, or just a normal conversation."
+  },
+  READY_TO_ACT: {
+    name: "Ready to Act",
+    description: "The user has indicated they feel ready to begin moving from evaluating possibilities into practical action. They may have explored pathways and reflected on what matters to them.",
+    whats_next: "When they're ready to start something concrete — CV work, an application, training, reaching out to a transition partner — we can begin looking at that together. For now, they can talk about what they're thinking of doing, what steps feel right, or just chat.",
+    can_discuss: "What they're thinking of doing next, what practical steps they might take, what support they might need, questions about the process, or just a normal conversation."
+  },
+  IN_TRANSITION: {
+    name: "In Transition",
+    description: "The user is in active transition — taking practical steps towards their next chapter. They may be working on CVs, applications, training, or engaging with transition support.",
+    whats_next: "I'm here throughout. When they feel like they're finding their feet and don't need active transition support anymore, we can talk about that too. But there's no pressure — they can talk about how things are going, what's working, what's not, or just chat.",
+    can_discuss: "How things are going, what they're working on, challenges, milestones, what's going well, what's not, support they might need, or just a normal conversation."
+  },
+  SETTLED: {
+    name: "Settled",
+    description: "The user has indicated they feel sufficiently established that they no longer require active transition support from MATE. The active transition journey is complete, but the relationship with Smudge continues.",
+    whats_next: "I'm here if they need me. No agenda, no process — just a conversation if they want one. They can talk about how things are going, ask questions, or just chat. If their circumstances change, we can talk about that too.",
+    can_discuss: "How things are going, what's new, questions about anything, or just a normal conversation. The process is complete but the companion relationship is not."
+  }
+};
+
+function buildStateAwareProfileContext(profile: any, currentPhase: string): string {
+  const parts: string[] = [];
+  // Base profile (same as buildProfileContext but extended for later states)
+  if (isSubstantive(profile.service_branch)) parts.push(`- Service: ${profile.service_branch}`);
+  if (isSubstantive(profile.rank)) parts.push(`- Rank: ${profile.rank}`);
+  if (profile.years_served !== null && profile.years_served !== undefined) parts.push(`- Years served: ${profile.years_served}`);
+  if (isSubstantive(profile.professional_identity)) parts.push(`- Professional identity: ${profile.professional_identity}`);
+  if (isSubstantive(profile.personal_context)) parts.push(`- Current circumstances: ${profile.personal_context}`);
+  if (Array.isArray(profile.goals) && profile.goals.length > 0) parts.push(`- Goals: ${profile.goals.join("; ")}`);
+  if (typeof profile.user_confidence === "number") parts.push(`- Self-reported confidence: ${profile.user_confidence}/10`);
+
+  // State-specific context
+  if (currentPhase === "EVALUATING" || currentPhase === "READY_TO_ACT" || currentPhase === "IN_TRANSITION" || currentPhase === "SETTLED") {
+    const capMap = Array.isArray(profile.capability_map) ? profile.capability_map : [];
+    if (capMap.length > 0) {
+      const capSummary = capMap.slice(0, 5).map((c: any) => c.skill || c.name || "capability").join(", ");
+      parts.push(`- Capabilities identified: ${capSummary}${capMap.length > 5 ? " (and others)" : ""}`);
+    }
+  }
+
+  if (currentPhase === "READY_TO_ACT" || currentPhase === "IN_TRANSITION" || currentPhase === "SETTLED") {
+    const pathways = Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways : [];
+    if (pathways.length > 0) {
+      const pathSummary = pathways.slice(0, 3).map((p: any) => p.name || p.title || "pathway").join(", ");
+      parts.push(`- Pathways explored: ${pathSummary}`);
+    }
+
+    const soak = profile.soak_period;
+    if (soak && typeof soak === "object" && soak.state) {
+      if (soak.state === "COMPLETED") parts.push("- Reflection period: completed");
+      else if (soak.state === "BYPASSED") parts.push("- Reflection period: bypassed");
+      else if (soak.state === "SOAKING") parts.push("- Reflection period: in progress");
+    }
+  }
+
+  if (currentPhase === "IN_TRANSITION" || currentPhase === "SETTLED") {
+    const milestones = Array.isArray(profile.milestones) ? profile.milestones : [];
+    if (milestones.length > 0) {
+      parts.push(`- Milestones recorded: ${milestones.length}`);
+    }
+    if (isSubstantive(profile.action_plan)) parts.push(`- Action plan: ${typeof profile.action_plan === "string" ? profile.action_plan : "active"}`);
+  }
+
+  return parts.length > 0 ? parts.join("\n") : "- No profile content available — you are still getting to know this person.";
+}
+
+function buildStateAwarePrompt(profile: any, currentPhase: string, userMessage: string, recentContext: any): string {
+  const stateInfo = STATE_CONTEXT[currentPhase] || STATE_CONTEXT["CONFIRMED"];
+  const profileContent = buildStateAwareProfileContext(profile, currentPhase);
+
+  const recentStr = (recentContext && Array.isArray(recentContext) && recentContext.length > 0)
+    ? recentContext.slice(-4).map((m: any) => `${m.role === "user" ? "User" : "Smudge"}: ${m.text}`).join("\n")
+    : "No recent context available.";
+
+  return `You are Smudge, a companion for military service leavers. You are talking to someone who is in the "${currentPhase}" phase of their MATE journey.
+
+What this phase means:
+${stateInfo.description}
+
+What happens next:
+${stateInfo.whats_next}
+
+What you can discuss in this phase:
+${stateInfo.can_discuss}
+
+What you know about this person:
+${profileContent}
+
+Recent conversation:
+${recentStr}
+
+The user just said: "${userMessage}"
+
+Write a natural, conversational response. You MUST follow these rules:
+
+1. Be conversational and warm. This is a relationship, not a system prompt response. Talk like a real person.
+2. You can discuss anything in the "What you can discuss" section above. Be genuinely helpful.
+3. If the user asks "what happens next" or "what do I do now", use the "What happens next" section above — in your own words, not copied.
+4. If the user asks what MATE is or what you do, answer directly: MATE is a companion service for people leaving the military. It helps you understand who you are outside the forces, what you're good at, and what your options might be.
+5. You have NEVER served in the military. You are NOT a veteran. You do NOT have military experience. If asked about your own background, say you're a companion who helps service leavers.
+6. NEVER invent capabilities, skills, evidence, career suitability, or transition outcomes. Only reference what's in the profile content above.
+7. Do NOT use internal terminology — no phase names, scores, engines, confidence levels, JSON, or technical terms. The user does not know what "CONFIRMED" or "EVALUATING" means.
+8. Keep your response short — 1 to 3 sentences. Do not overwhelm.
+9. If the user asked a question, answer honestly based on what you know. If you don't know, say so.
+10. Do not repeat or parrot what the user just said back to them. Acknowledge briefly and move forward.
+11. If the user seems uncertain or hesitant, do not push. Let them go at their own pace.
+12. If the user says something that could indicate a safety risk (self-harm, crisis), respond with care. Signpost Samaritans on 116 123 and NHS 111. Do not diagnose or dramatise.
+13. If the user corrects you — "I think you're putting too much weight on that" — accept it, recalibrate, and move forward. Do not defend or reinterpret.
+14. Vary your acknowledgements. Do not use the same opening word or phrase more than twice in a row.
+15. You can acknowledge, explain, reassure, discuss, answer questions, or just respond naturally. You are not limited to one type of response.
+16. Do NOT claim to have done any analysis, capability assessment, or evaluation. If the user asks about their capabilities or options, refer to what's in the profile content. If it's not there, say you don't have that information yet.
+17. If the user wants to go back to something, revisit a topic, or change direction, let them. Changing your mind is part of the process.`;
+}
+
+const postConfirmingSchema = {
+  type: "object",
+  properties: {
+    response_text: { type: "string", description: "Natural conversational response to the user" },
+    response_intent: { type: "string", enum: ["ACKNOWLEDGE", "EXPLORE", "CLARIFY"] },
+    asks_question: { type: "boolean", description: "Whether the response asks the user a question" }
+  },
+  required: ["response_text", "response_intent", "asks_question"]
+};
+
+async function handlePostConfirmingState(
+  base44: any,
+  profile: any,
+  profile_id: string,
+  currentPhase: string,
+  userMessage: string,
+  recentContext: any,
+  convState: any,
+  convStateId: string | null,
+  cors: Record<string, string>
+): Promise<Response> {
+  // 1. Lightweight safety classification
+  let safetyClass = "none";
+  try {
+    const safetyPrompt = `You are a safety classifier for a military service leaver companion service.
+
+Read the user's message and classify:
+- "none": No safety concern. Normal conversation, questions, discussion, frustration, or everyday language.
+- "clear_concern": Genuine crisis intent, self-harm risk, or suicidal ideation. Anger, frustration, profanity WITHOUT expressed self-harm intent is NOT concern.
+- "ambiguous": Could be concerning or benign — genuinely cannot tell. Example: "ending it" without context.
+
+Conservative backstop: when uncertainty cannot safely be resolved, classify as "ambiguous". Safety wins.
+
+User message: "${userMessage}"
+Profile context: ${buildProfileContext(profile)}`;
+
+    const safetyResult = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt: safetyPrompt,
+      response_json_schema: {
+        type: "object",
+        properties: {
+          classification: { type: "string", enum: ["none", "clear_concern", "ambiguous"] }
+        },
+        required: ["classification"]
+      }
+    });
+    safetyClass = safetyResult?.classification || "none";
+  } catch {
+    // If safety classification fails, proceed with caution — the generation prompt includes safety awareness
+    safetyClass = "none";
+  }
+
+  // Handle safety concern — same pathway as EXPLORING/CONFIRMING
+  if (safetyClass === "clear_concern") {
+    await base44.asServiceRole.entities.UserProfile.update(profile_id, {
+      safety_flags: JSON.stringify({
+        safety_concern_pending: true,
+        trigger_phrase: userMessage,
+        trigger_context: buildSafetyContext(profile, recentContext)
+      })
+    });
+    return new Response(JSON.stringify({
+      success: true,
+      response_text: "I'm here. That sounds really difficult. You don't have to face this alone. Samaritans is available 24/7 on 116 123, and NHS 111 can help too.",
+      response_intent: "CLARIFY", asks_question: true,
+      tos_phase: currentPhase, state_changed: false,
+      candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+      companion_result: null, recoverable_error: null,
+      orchestration_note: "POST_CONFIRMING_SAFETY_CONCERN",
+      companion_core_version: COMPANION_CORE_VERSION,
+      _internal: { safety_flow: "CONCERN", phase: currentPhase, safety_pending: true }
+    }), { headers: cors });
+  }
+
+  if (safetyClass === "ambiguous") {
+    await base44.asServiceRole.entities.UserProfile.update(profile_id, {
+      safety_flags: JSON.stringify({
+        safety_clarification_pending: true,
+        trigger_phrase: userMessage,
+        trigger_context: buildSafetyContext(profile, recentContext)
+      })
+    });
+    return new Response(JSON.stringify({
+      success: true,
+      response_text: "Can you help me understand what you mean by that?",
+      response_intent: "CLARIFY", asks_question: true,
+      tos_phase: currentPhase, state_changed: false,
+      candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+      companion_result: null, recoverable_error: null,
+      orchestration_note: "POST_CONFIRMING_SAFETY_AMBIGUOUS",
+      companion_core_version: COMPANION_CORE_VERSION,
+      _internal: { safety_flow: "AMBIGUOUS", phase: currentPhase, safety_pending: true }
+    }), { headers: cors });
+  }
+
+  // 2. Build state-aware prompt and generate response
+  let responseText = "";
+  let responseIntent = "ACKNOWLEDGE";
+  let asksQuestion = false;
+  let generationFallback = false;
+
+  try {
+    const prompt = buildStateAwarePrompt(profile, currentPhase, userMessage, recentContext);
+    const generation = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt,
+      response_json_schema: postConfirmingSchema
+    });
+
+    if (generation && typeof generation === "object" &&
+        typeof generation.response_text === "string" &&
+        generation.response_text.trim().length > 0) {
+      responseText = generation.response_text.trim();
+      responseIntent = ["ACKNOWLEDGE", "EXPLORE", "CLARIFY"].includes(generation.response_intent) ? generation.response_intent : "ACKNOWLEDGE";
+      asksQuestion = generation.asks_question === true;
+    } else {
+      generationFallback = true;
+    }
+  } catch {
+    generationFallback = true;
+  }
+
+  // Fallback responses (state-specific)
+  if (generationFallback || !responseText) {
+    const stateInfo = STATE_CONTEXT[currentPhase] || STATE_CONTEXT["CONFIRMED"];
+    if (currentPhase === "CONFIRMED") {
+      responseText = "Good to hear from you. We've got a solid picture of where you're coming from. Whenever you're ready, we can start looking at what you're actually good at — but there's no rush.";
+    } else if (currentPhase === "EVALUATING") {
+      responseText = "Good to talk. How are you finding things? We can chat about what you've discovered, or just have a normal conversation.";
+    } else if (currentPhase === "READY_TO_ACT") {
+      responseText = "Good to hear from you. How are you feeling about things? We can talk about what you're thinking of doing next, or just chat.";
+    } else if (currentPhase === "IN_TRANSITION") {
+      responseText = "Good to hear from you. How are things going? I'm here to chat about whatever's on your mind.";
+    } else if (currentPhase === "SETTLED") {
+      responseText = "Good to hear from you. How are things? I'm here if you need me — no agenda, just a conversation.";
+    } else {
+      responseText = "I hear you. Go on.";
+    }
+    responseIntent = "ACKNOWLEDGE";
+    asksQuestion = true;
+  }
+
+  // 3. Post-generation identity validation
+  let generationValidation = "PASSED";
+  if (!generationFallback && responseText) {
+    const validation = validateGeneration(responseText, false);
+    if (!validation.valid && validation.violation === "identity") {
+      generationValidation = "IDENTITY_VIOLATION_FAIL_CLOSED";
+      responseText = "I got that wrong — I don't have military experience. I'm a companion, not a veteran. I shouldn't have said that.";
+    }
+  }
+
+  // 4. ConversationState update
+  let convStatePersisted = false;
+  if (convStateId) {
+    try {
+      const now = new Date().toISOString();
+      let sessionStartedDate = convState.session_started_date || now;
+      // Session boundary detection (same as EXPLORING/CONFIRMING)
+      if (convState.last_interaction_date) {
+        const diffMin = (Date.now() - new Date(convState.last_interaction_date).getTime()) / 60000;
+        if (diffMin > 30) sessionStartedDate = now;
+      }
+
+      await base44.asServiceRole.entities.ConversationState.update(convStateId, {
+        last_smudge_response: truncateResponse(responseText),
+        last_smudge_intent: responseIntent,
+        last_interaction_date: now,
+        session_started_date: sessionStartedDate
+      });
+      convStatePersisted = true;
+    } catch {
+      convStatePersisted = false;
+    }
+  }
+
+  // 5. Return response
+  return new Response(JSON.stringify({
+    success: true,
+    response_text: responseText,
+    response_intent: responseIntent,
+    asks_question: asksQuestion,
+    tos_phase: currentPhase,
+    state_changed: false,
+    candidate_discoveries_count: 0,
+    accepted_discoveries_count: 0,
+    companion_result: null,
+    recoverable_error: null,
+    orchestration_note: "POST_CONFIRMING_CONVERSATIONAL",
+    companion_core_version: COMPANION_CORE_VERSION,
+    _internal: {
+      phase: currentPhase,
+      safety_check: safetyClass,
+      generation: {
+        intent: responseIntent,
+        asks_question: asksQuestion,
+        fallback: generationFallback,
+        validation: generationValidation
+      },
+      conversation_state_persisted: convStatePersisted,
+      lifecycle_neutral: true
+    }
+  }), { headers: cors });
+}
+
 Deno.serve(async (req) => {
   const cors: Record<string, string> = {
     "Access-Control-Allow-Origin": "*",
@@ -947,20 +1287,18 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
-    // 2. PHASE ROUTING — EXPLORING + CONFIRMING
+    // 2. PHASE ROUTING — EXPLORING + CONFIRMING / POST-CONFIRMING
+    // R1-C.1F PACKET 1: CONVERSATIONAL LIFELINE
+    // No lifecycle state may disable the companion relationship.
+    // Post-CONFIRMING states get state-aware conversational handling.
+    // No engine invocation. No lifecycle transitions. Conversation only.
     // ==================================================
 
     if (currentPhase !== "EXPLORING" && currentPhase !== "CONFIRMING") {
-      return new Response(JSON.stringify({
-        success: true,
-        response_text: "I'm still learning how to help with this stage of your journey. Your dashboard has more information about what's available.",
-        response_intent: "ACKNOWLEDGE", asks_question: false,
-        tos_phase: currentPhase, state_changed: false,
-        candidate_discoveries_count: 0, accepted_discoveries_count: 0,
-        companion_result: null, recoverable_error: null,
-        orchestration_note: "PHASE_OUT_OF_SCOPE",
-        companion_core_version: COMPANION_CORE_VERSION
-      }), { headers: cors });
+      return await handlePostConfirmingState(
+        base44, profile, profile_id, currentPhase,
+        user_message, recent_context, convState, convStateId, cors
+      );
     }
 
     // ==================================================
