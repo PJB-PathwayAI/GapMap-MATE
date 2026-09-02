@@ -1,5 +1,21 @@
+// D1 UPDATE — Journey Orchestration v1.0
+// Packet 2 R1-C.1F — Confirmation Authority Gate — v2.0
 import { createClientFromRequest } from "npm:@base44/sdk@0.8.31";
-import { companionCore, deserializeProfile, COMPANION_CORE_VERSION } from "../shared/companionCore.ts";
+import { companionCore, deserializeProfile, serializeForPersistence, COMPANION_CORE_VERSION } from "./companionCore.ts";
+
+// ─── B01: Rejected Directions helper (evidence_log persistence) ───
+// Rejected directions are stored as evidence_log entries with area: "rejected_direction".
+// This helper extracts them into the shape used by filtering code.
+function extractRejectedDirections(profile: any): { direction: string; rejection_text?: string; rejected_date?: string }[] {
+  const evidenceLog = Array.isArray(profile?.evidence_log) ? profile.evidence_log : [];
+  return evidenceLog
+    .filter((e: any) => e && e.area === "rejected_direction" && e.content)
+    .map((e: any) => ({
+      direction: String(e.content).toLowerCase().trim(),
+      rejection_text: e.source_text || "",
+      rejected_date: e.recorded_date || ""
+    }));
+}
 
 // ============================================================
 // smudgeOrchestrator — R1-C.1D-G2 (SMUDGE MVP Correction Packet Groups 1 + 2)
@@ -23,6 +39,38 @@ import { companionCore, deserializeProfile, COMPANION_CORE_VERSION } from "../sh
 //   R5. clarification generation — natural, non-diagnostic, mirrors words
 //
 // FROZEN: companionCore, lifecycle, persistence, engines, entity schemas
+
+// D3: Smudge Capability Awareness — canonical boundary statement (DI §8.3)
+const SMUDGE_CAPABILITY_STATEMENT = `I'm Smudge. I work alongside people leaving the military to help them understand what they're bringing with them and where they could fit.
+
+I can:
+- Listen to your story and help you see the capabilities you've built
+- Show you civilian pathways that match what you're good at
+- Help you think through what matters to you in your next move
+- Walk with you while you figure out your first steps
+- Be here when you come back
+
+I can't:
+- Get you a job directly
+- Tell you what to do
+- Access your military records
+- Connect you to recruiters
+- Make decisions for you
+
+I'm not a veteran. I'm not a counsellor. I'm a companion who happens to know how to help you see yourself more clearly.`;
+
+function isOrientationQuestion(userMessage: string): boolean {
+  const msg = userMessage.toLowerCase().trim();
+  const orientationPhrases = [
+    "what can you do", "what can you actually do", "what can you help",
+    "what can you do for", "what is this", "what's this", "how does this work",
+    "what are you", "who are you", "what's your job", "what do you do",
+    "what's your purpose", "what is this for", "what are you for",
+    "help me understand what this is", "what is mate", "what's mate",
+    "what should i expect", "what happens here"
+  ];
+  return orientationPhrases.some(p => msg.includes(p));
+}
 // ============================================================
 
 
@@ -218,7 +266,7 @@ function truncateResponse(text: string): string {
 }
 
 // --- Substance threshold (for profile context building only) ---
-const SUBSTANCE_THRESHOLD = 15;
+const SUBSTANCE_THRESHOLD = 5;
 
 function isSubstantive(value: any): boolean {
   if (!value) return false;
@@ -350,7 +398,8 @@ function buildNewDiscoveries(discoveries: any[]): { new_discoveries: any; reject
 
 // --- user_response_type downgrade (lifecycle-aware) ---
 function safeUserResponseType(raw: string, mode: string): { safe: string; downgraded: boolean } {
-  if (mode !== "CONFIRMING" && (raw === "confirming" || raw === "rejecting")) {
+  // Packet 2: New authority signals only valid in CONFIRMING
+  if (mode !== "CONFIRMING" && (raw === "confirming" || raw === "rejecting" || raw === "progressing" || raw === "confirming_progressing" || raw === "declining")) {
     return { safe: "answering", downgraded: true };
   }
   return { safe: raw || "answering", downgraded: false };
@@ -469,11 +518,25 @@ async function runSufficiencyGate(base44: any,
 
 function buildProfileContext(profile: any): string {
   const parts: string[] = [];
+  // Skills Inbox / SMUDGE 6: full_name for persistent conversational awareness (2-char threshold — names are short)
+  if (profile.full_name && typeof profile.full_name === "string" && profile.full_name.trim().length >= 2) parts.push(`- Name: ${profile.full_name}`);
   if (isSubstantive(profile.service_branch)) parts.push(`- Service: ${profile.service_branch}`);
   if (isSubstantive(profile.rank)) parts.push(`- Rank: ${profile.rank}`);
   if (profile.years_served !== null && profile.years_served !== undefined) parts.push(`- Years served: ${profile.years_served}`);
   if (isSubstantive(profile.professional_identity)) parts.push(`- Professional identity: ${profile.professional_identity}`);
   if (isSubstantive(profile.personal_context)) parts.push(`- Current circumstances: ${profile.personal_context}`);
+  // Skills Inbox: compact service_history summary (not full evidence_log dump)
+  if (Array.isArray(profile.service_history) && profile.service_history.length > 0) {
+    const histStr = profile.service_history.map((h: any) =>
+      [h.role, h.responsibilities].filter(Boolean).join(' — ')).join('; ');
+    parts.push(`- Service history: ${histStr}`);
+  }
+  // Skills Inbox: compact operational_context summary
+  if (Array.isArray(profile.operational_context) && profile.operational_context.length > 0) {
+    const ctxStr = profile.operational_context.map((c: any) =>
+      [c.factor, c.description].filter(Boolean).join(': ')).join('; ');
+    parts.push(`- Operational context: ${ctxStr}`);
+  }
   if (Array.isArray(profile.goals) && profile.goals.length > 0) parts.push(`- Goals: ${profile.goals.join("; ")}`);
   // R1-C.1E: Only render numeric confidence, not qualitative strings
   if (typeof profile.user_confidence === "number") parts.push(`- Self-reported confidence: ${profile.user_confidence}/10`);
@@ -514,6 +577,15 @@ function validateGeneration(text: string, evidenceSufficient: boolean): { valid:
   }
   return { valid: true, violation: null };
 }
+
+// Safe JSON parse for entity fields that may be empty string, null, or undefined
+function safeJsonParse(value: any, defaultValue: any): any {
+  if (typeof value === "string" && value.trim().length > 0) {
+    try { return JSON.parse(value); } catch { return defaultValue; }
+  }
+  return value || defaultValue;
+}
+
 
 // --- Generation helpers ---
 
@@ -615,6 +687,7 @@ function buildGenerationPrompt(ctx: any): string {
   lines.push("8. If the user seems uncertain or hesitant, do not push. Let them go at their own pace.");
   lines.push("9. If something went wrong on the backend, be honest about it. Do not pretend everything is fine.");
   lines.push("10. You have NEVER served in the military. You are NOT a veteran. You do NOT have military experience, personal service history, or lived experience of the forces. If asked about your own background, say you're a companion who helps service leavers — nothing more. Never fabricate military biography, rank, regiment, or deployment history.");
+  lines.push("10a. Do NOT claim to have found, retrieved, or verified external resources, services, or support. Do NOT output placeholders like [Insert Links]. If the user asks about external support, say you don't have that capability and suggest they speak to their transition partner or look into it themselves.");
   lines.push("11. Use mini acknowledgements between answers — \"Got you\", \"Makes sense\", \"Right\" — not full reflections. Save reflections for milestones: a significant personal disclosure, connecting two themes the user hasn't linked, or before transitioning to a new area. Do not reflect after every answer.");
   lines.push("12. If the behavioural guidance says an area has reached substance, move toward closure. Use a checkpoint like \"I think I've got a good picture of that now — anything else before we move on?\" Do not keep probing the same area. If the user signals boredom or frustration, close the topic immediately.");
   lines.push("13. Let questions chain naturally — two or three on a related thread before any reflection. Vary the rhythm. Not every exchange is the same shape. If the user is on a roll, follow it rather than redirecting.");
@@ -630,6 +703,13 @@ function buildGenerationPrompt(ctx: any): string {
   // R1-C.1D CONVERSATION AWARENESS rules
   lines.push("23. You can see what you said last turn and what topics you've covered. Do NOT repeat information from previous turns. Do NOT reopen topics the user has closed. If the user is returning after a break, briefly and naturally acknowledge where you were — do not restart from scratch.");
   lines.push("24. If the conversation mode is \"helping\", the user has asked for help with something. Help them. Do not ask another discovery question unless they explicitly invite it. If the mode is \"understanding\", continue building understanding — but do not ask about topics already covered or closed.");
+  // Packet 2 DI §4.4: Progression invitation guidance
+  if (ctx.confirmed && ctx.canonical_phase === "CONFIRMING") {
+    lines.push("25. The user\'s Operational Picture has been validated but they have not yet chosen to progress. You may offer a progression invitation: ask if they\'re ready to look at what they\'re actually good at, or whatever the natural next step is. Do not pressure. If they decline, continue the conversation naturally.");
+  }
+  if (ctx.progression_declined) {
+    lines.push("26. The user declined progression. Do not pressure. Do not immediately re-issue the invitation. Continue the conversation naturally. Let them raise readiness when they choose.");
+  }
   return lines.join("\n");
 }
 
@@ -637,7 +717,7 @@ const generationSchema = {
   type: "object",
   properties: {
     response_text: { type: "string", description: "Natural conversational response to the user" },
-    response_intent: { type: "string", enum: ["ACKNOWLEDGE", "EXPLORE", "CLARIFY", "REFLECT", "CONFIRMATION_PROMPT", "TRANSITION_ACKNOWLEDGEMENT"] },
+    response_intent: { type: "string", enum: ["ACKNOWLEDGE", "EXPLORE", "CLARIFY", "REFLECT", "CONFIRMATION_PROMPT", "PROGRESSION_INVITATION", "TRANSITION_ACKNOWLEDGEMENT"] },
     asks_question: { type: "boolean", description: "Whether the response asks the user a question" }
   },
   required: ["response_text", "response_intent", "asks_question"]
@@ -665,6 +745,14 @@ function buildFallbackResponse(ctx: any): { response_text: string; response_inte
   }
   if (ctx.lifecycle_transition && ctx.lifecycle_transition.includes("EXPLORING") && ctx.lifecycle_transition.includes("CONFIRMING")) {
     return { response_text: "I think I've got a decent picture of where you're coming from now. Before we move on, I'd like to share what I'm hearing — can I tell you what I'm picking up?", response_intent: "CONFIRMATION_PROMPT", asks_question: true };
+  }
+  // Packet 2 DI §4.8: Validated but not progressed
+  if (ctx.confirmed && ctx.canonical_phase === "CONFIRMING" && !ctx.progression_declined) {
+    return { response_text: "I've got a good picture of where you're coming from. Whenever you're ready, we could start looking at what you're actually good at — but only when it feels right to you.", response_intent: "PROGRESSION_INVITATION", asks_question: true };
+  }
+  // Packet 2: Progression declined
+  if (ctx.progression_declined) {
+    return { response_text: "No rush at all. We can stay here for now — is there anything else on your mind?", response_intent: "EXPLORE", asks_question: true };
   }
   if (ctx.no_discoveries && !ctx.clarification_needed) {
     return { response_text: "I hear you. Tell me a bit more about what's on your mind.", response_intent: "EXPLORE", asks_question: true };
@@ -822,11 +910,25 @@ const STATE_CONTEXT: Record<string, { name: string; description: string; whats_n
 function buildStateAwareProfileContext(profile: any, currentPhase: string): string {
   const parts: string[] = [];
   // Base profile (same as buildProfileContext but extended for later states)
+  // Skills Inbox / SMUDGE 6: full_name for persistent conversational awareness (2-char threshold — names are short)
+  if (profile.full_name && typeof profile.full_name === "string" && profile.full_name.trim().length >= 2) parts.push(`- Name: ${profile.full_name}`);
   if (isSubstantive(profile.service_branch)) parts.push(`- Service: ${profile.service_branch}`);
   if (isSubstantive(profile.rank)) parts.push(`- Rank: ${profile.rank}`);
   if (profile.years_served !== null && profile.years_served !== undefined) parts.push(`- Years served: ${profile.years_served}`);
   if (isSubstantive(profile.professional_identity)) parts.push(`- Professional identity: ${profile.professional_identity}`);
   if (isSubstantive(profile.personal_context)) parts.push(`- Current circumstances: ${profile.personal_context}`);
+  // Skills Inbox: compact service_history summary
+  if (Array.isArray(profile.service_history) && profile.service_history.length > 0) {
+    const histStr = profile.service_history.map((h: any) =>
+      [h.role, h.responsibilities].filter(Boolean).join(' — ')).join('; ');
+    parts.push(`- Service history: ${histStr}`);
+  }
+  // Skills Inbox: compact operational_context summary
+  if (Array.isArray(profile.operational_context) && profile.operational_context.length > 0) {
+    const ctxStr = profile.operational_context.map((c: any) =>
+      [c.factor, c.description].filter(Boolean).join(': ')).join('; ');
+    parts.push(`- Operational context: ${ctxStr}`);
+  }
   if (Array.isArray(profile.goals) && profile.goals.length > 0) parts.push(`- Goals: ${profile.goals.join("; ")}`);
   if (typeof profile.user_confidence === "number") parts.push(`- Self-reported confidence: ${profile.user_confidence}/10`);
 
@@ -839,10 +941,23 @@ function buildStateAwareProfileContext(profile: any, currentPhase: string): stri
     }
   }
 
+  // B01: Rejected directions note (capabilities retained, directions suppressed)
+  const rejectedDirs = extractRejectedDirections(profile);
+  if (rejectedDirs.length > 0) {
+    parts.push(`- Directions the user has explicitly ruled out: ${rejectedDirs.map((r: any) => r.direction).join(", ")}. Do NOT suggest these as career directions. Their capabilities are still valid evidence of what they can do — but they do not want these used as suggested directions.`);
+  }
+
   if (currentPhase === "READY_TO_ACT" || currentPhase === "IN_TRANSITION" || currentPhase === "SETTLED") {
     const pathways = Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways : [];
-    if (pathways.length > 0) {
-      const pathSummary = pathways.slice(0, 3).map((p: any) => p.name || p.title || "pathway").join(", ");
+    // B01: Filter pathways by rejected directions
+    const filteredPwys = pathways.filter((p: any) => {
+      const name = (p.pathway_name || p.name || p.title || "").toLowerCase();
+      return !rejectedDirs.some((r: any) =>
+        name.includes(r.direction) || r.direction.includes(name) || tokenOverlap(name, r.direction) >= 0.4
+      );
+    });
+    if (filteredPwys.length > 0) {
+      const pathSummary = filteredPwys.slice(0, 3).map((p: any) => p.name || p.title || "pathway").join(", ");
       parts.push(`- Pathways explored: ${pathSummary}`);
     }
 
@@ -865,7 +980,7 @@ function buildStateAwareProfileContext(profile: any, currentPhase: string): stri
   return parts.length > 0 ? parts.join("\n") : "- No profile content available — you are still getting to know this person.";
 }
 
-function buildStateAwarePrompt(profile: any, currentPhase: string, userMessage: string, recentContext: any): string {
+function buildStateAwarePrompt(profile: any, currentPhase: string, userMessage: string, recentContext: any, engineContext?: string): string {
   const stateInfo = STATE_CONTEXT[currentPhase] || STATE_CONTEXT["CONFIRMED"];
   const profileContent = buildStateAwareProfileContext(profile, currentPhase);
 
@@ -885,7 +1000,7 @@ What you can discuss in this phase:
 ${stateInfo.can_discuss}
 
 What you know about this person:
-${profileContent}
+${profileContent}${engineContext ? "\n" + engineContext : ""}
 
 Recent conversation:
 ${recentStr}
@@ -910,7 +1025,9 @@ Write a natural, conversational response. You MUST follow these rules:
 14. Vary your acknowledgements. Do not use the same opening word or phrase more than twice in a row.
 15. You can acknowledge, explain, reassure, discuss, answer questions, or just respond naturally. You are not limited to one type of response.
 16. Do NOT claim to have done any analysis, capability assessment, or evaluation. If the user asks about their capabilities or options, refer to what's in the profile content. If it's not there, say you don't have that information yet.
-17. If the user wants to go back to something, revisit a topic, or change direction, let them. Changing your mind is part of the process.`;
+17. If the user wants to go back to something, revisit a topic, or change direction, let them. Changing your mind is part of the process.
+18. You do NOT have the ability to search for, find, retrieve, or verify external resources, services, support organisations, or referrals. Do NOT claim to have found, pulled together, or located any external support. Do NOT output placeholders like [Insert Links] or [Insert Contact]. If the user asks about external support — housing, jobs, services, helplines — be honest: tell them you don't have that capability and suggest they speak to their transition partner or look into it themselves. The only exception is safety signposting (Samaritans 116 123, NHS 111) which you may always share.
+19. The user may have explicitly rejected certain career directions (listed in the profile context as "Directions the user has explicitly ruled out"). Do NOT resurface, reframe, or re-suggest these directions. This applies to BOTH pathways and directions inferred from capabilities. For example, if the user rejected "engineering", do not suggest engineering roles — even if they have welding or technical capabilities that might align. Capabilities remain valid evidence of what the person can do, but a rejected direction means they do not want it suggested as a career path. Do not work around a rejection by using different words for the same direction. However, if the user THEMSELVES raise a previously rejected direction ("actually, tell me more about logistics"), you may discuss it — the rejection prevents Smudge from initiating, not the user from revisiting.`;
 }
 
 const postConfirmingSchema = {
@@ -923,6 +1040,981 @@ const postConfirmingSchema = {
   required: ["response_text", "response_intent", "asks_question"]
 };
 
+// ─── Packet 3: Capability Handover (CONFIRMED → EVALUATING) ───
+// Authority: valid progression to CONFIRMED already authorises capability evaluation.
+// classifyDeferral is a conversational safeguard, NOT a permission gate.
+// Default = proceed. Explicit user deferral = remain conversational.
+
+// ─── Precondition Validation (inline — mirrors engine logic) ───
+function validateCapabilityPreconditions(profile: any): { met: boolean; failures: string[] } {
+  const failures: string[] = [];
+  if (profile.operational_picture_confirmed !== true) failures.push("Operational Picture not confirmed");
+  const assessmentRating = profile.assessment_confidence?.rating;
+  if (assessmentRating !== "HIGH" && assessmentRating !== "MODERATE") {
+    failures.push(`Assessment Confidence insufficient (current: ${assessmentRating || "none"})`);
+  }
+  if (!profile.service_branch || !Array.isArray(profile.service_history) || profile.service_history.length === 0) {
+    failures.push("UserProfile not validated (missing branch or service history)");
+  }
+  const evidenceLog = Array.isArray(profile.evidence_log) ? profile.evidence_log : [];
+  if (evidenceLog.length === 0) failures.push("Evidence Log not available (empty or missing)");
+  return { met: failures.length === 0, failures };
+}
+
+// ─── Seed Evidence (inline — mirrors engine logic) ───
+function seedEvidenceFromProfile(profile: any): any[] {
+  const entries: any[] = [];
+  let counter = 1;
+  const makeId = () => `EV-${String(counter++).padStart(3, "0")}`;
+  const today = new Date().toISOString().split("T")[0];
+
+  if (Array.isArray(profile.service_history)) {
+    for (const role of profile.service_history) {
+      const parts: string[] = [];
+      if (role.role) parts.push(`Role: ${role.role}`);
+      if (role.responsibilities) parts.push(`Responsibilities: ${role.responsibilities}`);
+      if (role.achievements) parts.push(`Achievements: ${role.achievements}`);
+      if (role.leadership_scope) parts.push(`Leadership: ${role.leadership_scope}`);
+      if (role.decision_making) parts.push(`Decision-making: ${role.decision_making}`);
+      if (role.deployment) parts.push(`Deployment: ${role.deployment}`);
+      if (parts.length > 0) {
+        entries.push({
+          evidence_id: makeId(), source_type: "service_history",
+          source_reference: `${role.role || "Military role"} (${role.start_date || ""}-${role.end_date || "present"})`,
+          content: parts.join(". "), recorded_date: today
+        });
+      }
+    }
+  }
+  if (profile.professional_identity && profile.professional_identity.length > 15) {
+    entries.push({ evidence_id: makeId(), source_type: "conversation", source_reference: "Discovery conversation — professional identity", content: profile.professional_identity, recorded_date: today });
+  }
+  if (profile.personal_context && profile.personal_context.length > 15) {
+    entries.push({ evidence_id: makeId(), source_type: "user_statement", source_reference: "Discovery conversation — personal context", content: profile.personal_context, recorded_date: today });
+  }
+  if (Array.isArray(profile.operational_context)) {
+    for (const ctx of profile.operational_context) {
+      if (ctx.description && ctx.description.length > 10) {
+        entries.push({ evidence_id: makeId(), source_type: "user_statement", source_reference: `Discovery conversation — ${ctx.factor || "operational context"}`, content: ctx.description, recorded_date: today });
+      }
+    }
+  }
+  if (Array.isArray(profile.goals) && profile.goals.length > 0) {
+    entries.push({ evidence_id: makeId(), source_type: "user_statement", source_reference: "Discovery conversation — goals and aspirations", content: profile.goals.join(". "), recorded_date: today });
+  }
+  return entries;
+}
+
+// ─── Deferral Classification (conversational safeguard, NOT permission gate) ───
+async function classifyDeferral(
+  base44: any, userMessage: string, recentContext: any
+): Promise<"proceed" | "defer"> {
+  try {
+    const recentStr = (recentContext && Array.isArray(recentContext) && recentContext.length > 0)
+      ? recentContext.slice(-3).map((m: any) => `${m.role === "user" ? "User" : "Smudge"}: ${m.text}`).join("\n")
+      : "No recent context.";
+    const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt: `You are a conversational context classifier for a military service leaver companion service.
+
+The user is in the CONFIRMED stage — they have ALREADY authorised capability evaluation by progressing to this stage. Authority is already established. You are NOT deciding whether to grant permission. You are only checking whether NOW is the right conversational moment.
+
+Classify the user's message:
+- "defer": The user is explicitly pausing, asking a question, changing topic, or saying "not yet." They are actively redirecting away from capability evaluation.
+- "proceed": Everything else — including neutral messages, going along, agreement, silence-equivalent, or messages that don't actively redirect.
+
+Conservative default: when in doubt, classify as "proceed." The user has already authorised this; you are only checking for active deferral.
+
+Recent conversation:
+${recentStr}
+
+User message: "${userMessage}"`,
+      response_json_schema: {
+        type: "object",
+        properties: { classification: { type: "string", enum: ["proceed", "defer"] } },
+        required: ["classification"]
+      }
+    });
+    return result?.classification === "defer" ? "defer" : "proceed";
+  } catch {
+    return "proceed"; // Default to proceed on classification failure
+  }
+}
+
+// ─── Capability Identification (single-pass LLM) ───
+async function identifyCapabilities(
+  base44: any, profile: any, evidenceLog: any[]
+): Promise<any[]> {
+  const evidenceText = evidenceLog.map(e =>
+    `[${e.evidence_id}] (${e.source_type}) ${e.source_reference}: ${e.content}`
+  ).join("\n");
+  const profileContext = buildProfileContext(profile);
+
+  const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+    prompt: `You are identifying capabilities for a military service leaver based on their evidence log.
+
+This is what we know about the person:
+${profileContext}
+
+This is the evidence log:
+${evidenceText}
+
+Identify the person's capabilities. For each capability, provide:
+- capability_name: What they can do (military terms are fine)
+- civilian_translation: What this means in civilian terms
+- evidence_refs: Array of evidence_id values from the evidence log that support this capability
+- transferability_notes: How this transfers to civilian work
+
+Rules:
+1. Every capability MUST reference at least one evidence_id from the evidence log above
+2. Do not invent capabilities not supported by evidence
+3. Do not infer capabilities from rank or branch alone — look at what they actually did
+4. Focus on transferable capabilities, not military-specific skills
+5. Aim for 3-7 capabilities — quality over quantity
+
+Return as a JSON array.`,
+    response_json_schema: {
+      type: "object",
+      properties: {
+        capabilities: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              capability_name: { type: "string" },
+              civilian_translation: { type: "string" },
+              evidence_refs: { type: "array", items: { type: "string" } },
+              transferability_notes: { type: "string" }
+            },
+            required: ["capability_name", "civilian_translation", "evidence_refs"]
+          }
+        }
+      },
+      required: ["capabilities"]
+    }
+  });
+  return Array.isArray(result?.capabilities) ? result.capabilities : [];
+}
+
+// ─── Confidence Calculation (inline — mirrors engine logic) ───
+function calculateCapabilityConfidence(
+  evidenceRefs: string[], evidenceLog: any[]
+): { score: number; rating: string } {
+  const referenced = evidenceLog.filter(e => evidenceRefs.includes(e.evidence_id));
+  if (referenced.length === 0) return { score: 0, rating: "LOW" };
+  let score = 40;
+  score += Math.min(referenced.length - 1, 3) * 15;
+  if (referenced.some(e => e.content && e.content.length > 30)) score += 10;
+  if (new Set(referenced.map(e => e.source_type)).size > 1) score += 10;
+  score = Math.min(100, score);
+  return { score, rating: score < 41 ? "LOW" : score < 71 ? "MODERATE" : "HIGH" };
+}
+
+// ─── Build, Persist, and Transition (inline — mirrors engine submit_capabilities) ───
+async function buildAndPersistCapabilities(
+  base44: any, profile: any, profile_id: string,
+  capabilities: any[], evidenceLog: any[]
+): Promise<{ accepted: any[]; rejected: any[]; capability_picture: any }> {
+  const accepted: any[] = [];
+  const rejected: any[] = [];
+
+  for (const cap of capabilities) {
+    if (!cap.capability_name || !cap.civilian_translation) {
+      rejected.push({ capability_name: cap.capability_name || "(unnamed)", reason: "Missing capability_name or civilian_translation" });
+      continue;
+    }
+    if (!cap.evidence_refs || cap.evidence_refs.length === 0) {
+      rejected.push({ capability_name: cap.capability_name, reason: "No evidence references provided" });
+      continue;
+    }
+    const validRefs = cap.evidence_refs.filter((refId: string) => evidenceLog.some(e => e.evidence_id === refId));
+    if (validRefs.length === 0) {
+      rejected.push({ capability_name: cap.capability_name, reason: `Evidence references not found: ${cap.evidence_refs.join(", ")}` });
+      continue;
+    }
+    const { score, rating } = calculateCapabilityConfidence(validRefs, evidenceLog);
+    const evidenceSummary = validRefs.map((refId: string) => {
+      const entry = evidenceLog.find(e => e.evidence_id === refId);
+      return entry ? `[${entry.source_type}] ${entry.source_reference}: ${entry.content}` : `Unknown evidence ref: ${refId}`;
+    });
+    accepted.push({
+      capability_name: cap.capability_name, civilian_translation: cap.civilian_translation,
+      evidence_refs: validRefs, evidence_summary: evidenceSummary,
+      confidence_score: score, confidence_rating: rating,
+      transferability_notes: cap.transferability_notes || ""
+    });
+  }
+
+  if (accepted.length === 0) return { accepted: [], rejected, capability_picture: null };
+
+  const capabilityMap = accepted.map(c => ({
+    skill: c.capability_name, civilian_equivalent: c.civilian_translation,
+    evidence: c.evidence_summary.join(" | "), evidence_ref: c.evidence_refs.join(","), score: c.confidence_score
+  }));
+  const confidenceScores = accepted.map(c => ({
+    skill: c.capability_name, confidence: c.confidence_score,
+    evidence_refs: c.evidence_refs.join(","), evidence_ref: c.evidence_refs[0]
+  }));
+
+  const existingCapMap = Array.isArray(profile.capability_map) ? profile.capability_map : [];
+  const existingConfidence = Array.isArray(profile.confidence_scores) ? profile.confidence_scores : [];
+  const mergedCapMap = [...existingCapMap.filter(c => !accepted.some(a => a.capability_name === c.skill)), ...capabilityMap];
+  const mergedConfidence = [...existingConfidence.filter(c => !accepted.some(a => a.capability_name === c.skill)), ...confidenceScores];
+
+  // Persist + transition (under orchestrator authority — R-P3-1)
+  // Re-serialize entire profile (deserializeProfile converts strings to objects;
+  // the entity schema expects strings, so we must serialize back before update)
+  const persistPayload = serializeForPersistence({
+    ...profile,
+    capability_map: mergedCapMap,
+    confidence_scores: mergedConfidence,
+    tos_phase: "EVALUATING"
+  });
+  await base44.asServiceRole.entities.UserProfile.update(profile_id, persistPayload);
+
+  // Build capability picture
+  const high = accepted.filter(c => c.confidence_rating === "HIGH").length;
+  const moderate = accepted.filter(c => c.confidence_rating === "MODERATE").length;
+  const low = accepted.filter(c => c.confidence_rating === "LOW").length;
+  const sorted = [...accepted].sort((a, b) => b.confidence_score - a.confidence_score);
+
+  return {
+    accepted, rejected,
+    capability_picture: {
+      generated: true, profile_name: profile.full_name || "Unknown",
+      total_capabilities: accepted.length,
+      confidence_summary: { high, moderate, low },
+      capabilities: sorted,
+      ready_for_phase_four: accepted.length > 0 && low === 0,
+      presentation_guidance: {
+        tone: "observation not judgement", approach: "invite recognition, never impose identity",
+        example_phrasing: '"From everything we\'ve explored together, one capability keeps appearing."',
+        avoid: ["You are definitely a leader", "You should consider...", "This means you could..."],
+        success_indicator: 'User responds with something similar to "I\'d never thought about it like that."'
+      },
+      explainability: "Every capability includes evidence_summary showing exactly how it was identified."
+    }
+  };
+}
+
+// ─── Capability Presentation (conversational LLM) ───
+async function generateCapabilityPresentation(
+  base44: any, profile: any, accepted: any[], rejected: any[], recentContext: any
+): Promise<{ response_text: string; response_intent: string; asks_question: boolean } | null> {
+  const capList = accepted.map(c =>
+    `- ${c.capability_name} (civilian: ${c.civilian_translation}) — Confidence: ${c.confidence_rating}. Evidence: ${c.evidence_summary.join("; ")}`
+  ).join("\n");
+  const recentStr = (recentContext && Array.isArray(recentContext) && recentContext.length > 0)
+    ? recentContext.slice(-4).map((m: any) => `${m.role === "user" ? "User" : "Smudge"}: ${m.text}`).join("\n") : "";
+
+  try {
+    const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt: `You are Smudge, a companion for people leaving the military.
+
+You have just completed a capability evaluation for this person. You need to present the results conversationally.
+
+The person is in the CONFIRMED stage — they agreed to look at their capabilities. You are presenting what you found.
+
+What you know about this person:
+${buildProfileContext(profile)}
+
+Capabilities identified (with evidence):
+${capList}
+
+${rejected.length > 0 ? `Capabilities rejected (no valid evidence — DO NOT mention these): ${rejected.map(r => r.capability_name).join(", ")}` : ""}
+
+Recent conversation:
+${recentStr}
+
+Write a natural response presenting these capabilities. You MUST follow these rules:
+
+1. Present capabilities as OBSERVATIONS, not judgements. "From what you've told me, a few things keep coming through..." not "You are definitely a leader."
+2. Invite recognition, never impose identity. Let the user see themselves in the capabilities.
+3. Do NOT dump all capabilities at once. Weave them naturally — lead with the strongest, mention 2-3, let the rest emerge in conversation.
+4. Do NOT use the rejected capabilities. They failed the evidence check.
+5. Reference evidence naturally when relevant — "when you talked about leading your section through..."
+6. Do NOT use internal terminology — no confidence scores, no evidence IDs, no phase names, no JSON.
+7. Keep it conversational — 3-5 sentences. This is the beginning of a conversation about capabilities, not a final report.
+8. End with an open invitation — let the user react, question, or sit with it.
+9. Do NOT say "I've analysed" or "the engine has determined." You are Smudge, having a conversation.
+10. If there's only one capability, that's fine. Don't pad.
+11. Do NOT claim to have found, retrieved, or verified external resources, services, or support. Do NOT output placeholders like [Insert Links]. If the user asks about external support, say you don't have that capability.`,
+      response_json_schema: {
+        type: "object",
+        properties: {
+          response_text: { type: "string", description: "Natural conversational response presenting capabilities" },
+          response_intent: { type: "string", enum: ["ACKNOWLEDGE", "EXPLORE", "CLARIFY"] },
+          asks_question: { type: "boolean" }
+        },
+        required: ["response_text", "response_intent", "asks_question"]
+      }
+    });
+    if (result && typeof result.response_text === "string" && result.response_text.trim().length > 0) {
+      return {
+        response_text: result.response_text.trim(),
+        response_intent: ["ACKNOWLEDGE", "EXPLORE", "CLARIFY"].includes(result.response_intent) ? result.response_intent : "ACKNOWLEDGE",
+        asks_question: result.asks_question === true
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Precondition Failure Response (conversational) ───
+async function generatePreconditionFailureResponse(
+  base44: any, failures: string[], convState: any, convStateId: string | null, cors: Record<string, string>
+): Promise<Response> {
+  let gapText = "";
+  if (failures.some(f => f.includes("Assessment Confidence"))) {
+    gapText = "I want to make sure we've got enough to work with before we start looking at this properly. Can you tell me a bit more about your service experience?";
+  } else if (failures.some(f => f.includes("UserProfile not validated"))) {
+    gapText = "I need to know a bit more about your service background before we can look at this properly.";
+  } else if (failures.some(f => f.includes("Operational Picture not confirmed"))) {
+    gapText = "Something's changed since we last talked. Can we make sure I've still got the right picture?";
+  } else {
+    gapText = "I'm not quite ready to look at this yet. Can we talk a bit more first?";
+  }
+
+  if (convStateId) {
+    try {
+      await base44.asServiceRole.entities.ConversationState.update(convStateId, {
+        last_smudge_response: truncateResponse(gapText), last_smudge_intent: "CLARIFY",
+        last_interaction_date: new Date().toISOString()
+      });
+    } catch { /* ignore */ }
+  }
+
+  return new Response(JSON.stringify({
+    success: true, response_text: gapText, response_intent: "CLARIFY", asks_question: true,
+    tos_phase: "CONFIRMED", state_changed: false,
+    candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+    companion_result: null, recoverable_error: null,
+    orchestration_note: "CAPABILITY_PRECONDITION_FAILED", companion_core_version: COMPANION_CORE_VERSION,
+    _internal: { phase: "CONFIRMED", precondition_failures: failures, lifecycle_neutral: true }
+  }), { headers: cors });
+}
+
+// ─── Fallback Response (conversational) ───
+async function generateHandoverFallback(
+  base44: any, text: string, phase: string, note: string,
+  convState: any, convStateId: string | null, cors: Record<string, string>
+): Promise<Response> {
+  if (convStateId) {
+    try {
+      await base44.asServiceRole.entities.ConversationState.update(convStateId, {
+        last_smudge_response: truncateResponse(text), last_smudge_intent: "CLARIFY",
+        last_interaction_date: new Date().toISOString()
+      });
+    } catch { /* ignore */ }
+  }
+  return new Response(JSON.stringify({
+    success: true, response_text: text, response_intent: "CLARIFY", asks_question: true,
+    tos_phase: phase, state_changed: false,
+    candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+    companion_result: null, recoverable_error: null,
+    orchestration_note: note, companion_core_version: COMPANION_CORE_VERSION,
+    _internal: { phase: phase, fallback: true, lifecycle_neutral: true }
+  }), { headers: cors });
+}
+
+// ─── Capability Handover Orchestrator ───
+async function handleCapabilityHandover(
+  base44: any, profile: any, profile_id: string, userMessage: string,
+  recentContext: any, convState: any, convStateId: string | null, cors: Record<string, string>
+): Promise<Response> {
+  // Step 1: Validate preconditions
+  const preconditions = validateCapabilityPreconditions(profile);
+
+  if (!preconditions.met) {
+    // Try seed_evidence if evidence log is empty
+    const evidenceLog = Array.isArray(profile.evidence_log) ? profile.evidence_log : [];
+    if (evidenceLog.length === 0 && preconditions.failures.some(f => f.includes("Evidence Log"))) {
+      const seeded = seedEvidenceFromProfile(profile);
+      if (seeded.length > 0) {
+        try {
+          await base44.asServiceRole.entities.UserProfile.update(profile_id, { evidence_log: seeded });
+          const updatedProfile = await base44.asServiceRole.entities.UserProfile.get(profile_id);
+          const retry = validateCapabilityPreconditions(updatedProfile);
+          if (!retry.met) {
+            return await generatePreconditionFailureResponse(base44, retry.failures, convState, convStateId, cors);
+          }
+          profile = updatedProfile; // Continue with updated profile
+        } catch {
+          return await generatePreconditionFailureResponse(base44, preconditions.failures, convState, convStateId, cors);
+        }
+      } else {
+        return await generatePreconditionFailureResponse(base44, preconditions.failures, convState, convStateId, cors);
+      }
+    } else {
+      return await generatePreconditionFailureResponse(base44, preconditions.failures, convState, convStateId, cors);
+    }
+  }
+
+  // Step 2: Identify capabilities from evidence_log (single-pass LLM)
+  // B01: Exclude rejected_direction entries — they are not capability evidence
+  const evidenceLog = (Array.isArray(profile.evidence_log) ? profile.evidence_log : []).filter((e: any) => e && e.area !== "rejected_direction");
+  let capabilities: any[] = [];
+  try {
+    capabilities = await identifyCapabilities(base44, profile, evidenceLog);
+  } catch {
+    return await generateHandoverFallback(base44, "I'm having trouble processing that right now. Can we try again in a moment?", "CONFIRMED", "CAPABILITY_IDENTIFY_FAILED", convState, convStateId, cors);
+  }
+
+  if (capabilities.length === 0) {
+    return await generateHandoverFallback(base44, "I've been looking at everything we've talked about, but I'm not quite ready to share anything yet. Can you tell me a bit more about what you did day-to-day?", "CONFIRMED", "CAPABILITY_NONE_IDENTIFIED", convState, convStateId, cors);
+  }
+
+  // Step 3: Submit capabilities (validate evidence rule, calculate confidence, persist, transition)
+  let result: { accepted: any[]; rejected: any[]; capability_picture: any };
+  try {
+    result = await buildAndPersistCapabilities(base44, profile, profile_id, capabilities, evidenceLog);
+  } catch {
+    return await generateHandoverFallback(base44, "Something went wrong on my end. Give me a moment and we can try again.", "CONFIRMED", "CAPABILITY_PERSIST_FAILED", convState, convStateId, cors);
+  }
+
+  if (result.accepted.length === 0) {
+    return await generateHandoverFallback(base44, "I've been looking at what we've discussed, but I don't think I've got enough detail yet to tell you what you're genuinely good at. Can you tell me more about what your day-to-day actually involved?", "CONFIRMED", "CAPABILITY_ALL_REJECTED", convState, convStateId, cors);
+  }
+
+  // Step 4: Generate conversational presentation
+  let presentation: { response_text: string; response_intent: string; asks_question: boolean } | null = null;
+  try {
+    presentation = await generateCapabilityPresentation(base44, profile, result.accepted, result.rejected, recentContext);
+  } catch { presentation = null; }
+
+  if (!presentation) {
+    const topCap = result.accepted[0];
+    presentation = {
+      response_text: `From what you've told me, one thing keeps coming through — ${topCap.civilian_translation}. That's something civilians will value. Want to talk through what that looks like?`,
+      response_intent: "EXPLORE", asks_question: true
+    };
+  }
+
+  // Step 5: Update ConversationState
+  if (convStateId) {
+    try {
+      const now = new Date().toISOString();
+      let sessionStartedDate = convState.session_started_date || now;
+      if (convState.last_interaction_date) {
+        const diffMin = (Date.now() - new Date(convState.last_interaction_date).getTime()) / 60000;
+        if (diffMin > 30) sessionStartedDate = now;
+      }
+      await base44.asServiceRole.entities.ConversationState.update(convStateId, {
+        last_smudge_response: truncateResponse(presentation.response_text),
+        last_smudge_intent: presentation.response_intent,
+        last_interaction_date: now, session_started_date: sessionStartedDate
+      });
+    } catch { /* ignore */ }
+  }
+
+  // Step 6: Return response
+  return new Response(JSON.stringify({
+    success: true, response_text: presentation.response_text,
+    response_intent: presentation.response_intent, asks_question: presentation.asks_question,
+    tos_phase: "EVALUATING", state_changed: true,
+    candidate_discoveries_count: 0, accepted_discoveries_count: result.accepted.length,
+    companion_result: null, recoverable_error: null,
+    orchestration_note: "CAPABILITY_HANDOVER_COMPLETE", companion_core_version: COMPANION_CORE_VERSION,
+    _internal: {
+      phase: "EVALUATING",
+      capability_handover: {
+        preconditions_met: true, capabilities_identified: capabilities.length,
+        capabilities_accepted: result.accepted.length, capabilities_rejected: result.rejected.length,
+        lifecycle_transition: "CONFIRMED → EVALUATING"
+      }, lifecycle_neutral: false
+    }
+  }), { headers: cors });
+}
+
+// ─── End Packet 3 Functions ───
+
+// ============================================================
+// D1: JOURNEY ORCHESTRATION — EVALUATING ENGINE INTEGRATION
+// Design Intent v1.0 — accepted 28 Aug 2026
+// Scope: EVALUATING state only. D2/D3 not authorised.
+// ============================================================
+
+// D1: callEngine helper — HTTP fetch wrapper for engine invocation
+// D1: Inline engine actions (platform limitation: functions can't call other functions via HTTP)
+function tokenOverlap(a: string, b: string): number {
+  const tokensA = new Set(a.split(/\s+/).filter(t => t.length > 2));
+  const tokensB = new Set(b.split(/\s+/).filter(t => t.length > 2));
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  const intersection = new Set([...tokensA].filter(t => tokensB.has(t)));
+  const union = new Set([...tokensA, ...tokensB]);
+  return intersection.size / union.size;
+}
+
+async function inlineEngineAction(
+  base44: any, profile: any, profile_id: string, action: string, params?: any
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  try {
+    if (action === "get_status") {
+      const decisionFactors = safeJsonParse(profile.decision_factors, {});
+      const expressedFactors = Object.entries(decisionFactors)
+        .filter(([, v]: [string, any]) => v?.expressed === true)
+        .map(([k]) => k);
+      const soakPeriod = safeJsonParse(profile.soak_period, { state: "NOT_STARTED" });
+      const recommendedPathways = safeJsonParse(profile.recommended_pathways, []);
+      const capabilityMap = safeJsonParse(profile.capability_map, []);
+      return {
+        success: true,
+        data: {
+          tos_phase: profile.tos_phase,
+          soak_period: soakPeriod,
+          soak_state: soakPeriod.state || "NOT_STARTED",
+          pathway_count: Array.isArray(recommendedPathways) ? recommendedPathways.length : 0,
+          expressed_decision_factors: expressedFactors,
+          capability_count: Array.isArray(capabilityMap) ? capabilityMap.length : 0
+        }
+      };
+    }
+
+    if (action === "evaluate_pathways") {
+      const allPathways = await base44.asServiceRole.entities.OCIPathway.list();
+      const capabilityMap = safeJsonParse(profile.capability_map, []);
+      const evidenceLog = safeJsonParse(profile.evidence_log, []);
+      const evidenceIndex = new Set(evidenceLog.map((e: any) => e.evidence_id));
+
+      const profileCapabilities = capabilityMap.map((cap: any) => ({
+        name: (cap.skill || cap.capability || "").toLowerCase().trim(),
+        confidence: cap.score || cap.confidence || 0,
+        evidence_refs: Array.isArray(cap.evidence_refs) ? cap.evidence_refs : (cap.evidence_ref ? String(cap.evidence_ref).split(",").map((r: string) => r.trim()) : []),
+      }));
+
+      for (const cap of profileCapabilities) {
+        for (const ref of cap.evidence_refs) {
+          if (ref && !evidenceIndex.has(ref)) {
+            return { success: false, error: `Evidence integrity failure: capability '${cap.name}' references evidence '${ref}' which does not exist.` };
+          }
+        }
+      }
+
+      const matches: any[] = [];
+      const now = new Date().toISOString();
+      for (const pathway of allPathways) {
+        if (pathway.review_status === "retired") continue;
+        const pathwayCapabilities = Array.isArray(pathway.capability_profile)
+          ? pathway.capability_profile.map((c: string) => (c || "").toLowerCase().trim())
+          : [];
+        if (pathwayCapabilities.length === 0) continue;
+
+        const alignedCapabilities: string[] = [];
+        for (const required of pathwayCapabilities) {
+          const match = profileCapabilities.find((pc: any) =>
+            pc.name.includes(required) || required.includes(pc.name) || tokenOverlap(pc.name, required) >= 0.5
+          );
+          if (match) alignedCapabilities.push(match.name);
+        }
+
+        if (alignedCapabilities.length > 0) {
+          matches.push({
+            pathway_id: pathway.id,
+            pathway_name: pathway.name,
+            alignment_score: alignedCapabilities.length / pathwayCapabilities.length,
+            aligned_capabilities: alignedCapabilities,
+            pathway_capabilities: pathwayCapabilities,
+            entry_routes: pathway.entry_routes || [],
+            common_transition_gaps: pathway.common_transition_gaps || [],
+            development_opportunities: pathway.development_opportunities || [],
+            civilian_context: pathway.civilian_context || "",
+            lifestyle_considerations: pathway.lifestyle_considerations || {},
+            evaluated_date: now
+          });
+        }
+      }
+      matches.sort((a, b) => b.alignment_score - a.alignment_score);
+
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, serializeForPersistence({
+        recommended_pathways: matches
+      }));
+
+      return {
+        success: true,
+        data: { pathway_count: matches.length, pathways: matches }
+      };
+    }
+
+    if (action === "initiate_soak") {
+      const currentSoak = safeJsonParse(profile.soak_period, {});
+      if ((currentSoak.state || "NOT_STARTED") !== "NOT_STARTED") {
+        return { success: false, error: `Cannot initiate from '${currentSoak.state}'` };
+      }
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, serializeForPersistence({
+        soak_period: { state: "SOAKING", initiated_date: new Date().toISOString(), completed_date: null, bypassed_date: null, bypass_reason: null, reflection_notes: "" }
+      }));
+      return { success: true, data: { soak_state: "SOAKING", tos_phase: profile.tos_phase } };
+    }
+
+    if (action === "complete_soak") {
+      const currentSoak = safeJsonParse(profile.soak_period, {});
+      if ((currentSoak.state || "NOT_STARTED") !== "SOAKING") {
+        return { success: false, error: `Cannot complete from '${currentSoak.state}'` };
+      }
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, serializeForPersistence({
+        soak_period: { ...currentSoak, state: "COMPLETED", completed_date: new Date().toISOString(), reflection_notes: params?.reflection_notes || "" },
+        tos_phase: "READY_TO_ACT"
+      }));
+      return { success: true, data: { soak_state: "COMPLETED", tos_phase: "READY_TO_ACT" } };
+    }
+
+    if (action === "bypass_soak") {
+      const currentSoak = safeJsonParse(profile.soak_period, {});
+      if (!["NOT_STARTED", "SOAKING"].includes(currentSoak.state || "NOT_STARTED")) {
+        return { success: false, error: `Cannot bypass from '${currentSoak.state}'` };
+      }
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, serializeForPersistence({
+        soak_period: { ...currentSoak, state: "BYPASSED", bypassed_date: new Date().toISOString(), bypass_reason: params?.soak_bypass_reason || "" },
+        tos_phase: "READY_TO_ACT"
+      }));
+      return { success: true, data: { soak_state: "BYPASSED", tos_phase: "READY_TO_ACT" } };
+    }
+
+    return { success: false, error: `Unknown action: ${action}` };
+  } catch (err: any) {
+    return { success: false, error: `${action} failed: ${err?.message || "Unknown error"}` };
+  }
+}
+
+// D2: Inline Transition Partnership actions (same platform constraint as D1)
+function deserializeJourney(journey: any): any {
+  const jsonFields = ["current_blockers", "significant_milestones", "active_commitments", "transition_status", "referral_history", "wellbeing_awareness"];
+  for (const f of jsonFields) {
+    if (typeof journey[f] === "string" && journey[f].length > 0) {
+      try { journey[f] = JSON.parse(journey[f]); } catch { /* not JSON */ }
+    }
+    if (journey[f] === null || journey[f] === undefined) {
+      journey[f] = (f === "current_blockers" || f === "significant_milestones" || f === "active_commitments" || f === "referral_history") ? [] : {};
+    }
+  }
+  return journey;
+}
+
+async function findActiveJourneyInline(base44: any, profileId: string): Promise<any | null> {
+  try {
+    const journeys = await base44.asServiceRole.entities.TransitionJourney.list();
+    const active = journeys.find((j: any) =>
+      j.user_profile_id === profileId && j.partnership_state !== "INDEPENDENT"
+    );
+    return active ? deserializeJourney(active) : null;
+  } catch { return null; }
+}
+
+const TP_VALID_TRANSITIONS: Record<string, string[]> = {
+  "ACTIVE": ["MONITORING", "SUPPORT_REQUIRED", "REFERRAL", "INDEPENDENT"],
+  "MONITORING": ["ACTIVE", "SUPPORT_REQUIRED", "REFERRAL", "INDEPENDENT"],
+  "SUPPORT_REQUIRED": ["ACTIVE", "REFERRAL", "INDEPENDENT"],
+  "REFERRAL": ["ACTIVE", "MONITORING", "INDEPENDENT"],
+  "INDEPENDENT": []
+};
+
+async function inlineTPAction(
+  base44: any, profile: any, profile_id: string, action: string, params?: any
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  try {
+    if (action === "get_journey_status") {
+      const journey = await findActiveJourneyInline(base44, profile_id);
+      if (!journey) return { success: true, data: { active: false, partnership_state: null } };
+      return {
+        success: true,
+        data: {
+          active: true, journey_id: journey.id, partnership_state: journey.partnership_state,
+          confidence_band: journey.confidence_band || "BUILDING",
+          current_direction: journey.current_direction || "",
+          current_blockers: Array.isArray(journey.current_blockers) ? journey.current_blockers : [],
+          significant_milestones: Array.isArray(journey.significant_milestones) ? journey.significant_milestones : [],
+          active_commitments: Array.isArray(journey.active_commitments) ? journey.active_commitments : [],
+          operational_readiness: journey.operational_readiness || "ON_COURSE"
+        }
+      };
+    }
+
+    if (action === "start_journey") {
+      if (profile.tos_phase !== "READY_TO_ACT")
+        return { success: false, error: `Precondition failed: requires READY_TO_ACT. Current: ${profile.tos_phase}` };
+      const soakPeriod = safeJsonParse(profile.soak_period, {});
+      if (soakPeriod.state !== "COMPLETED" && soakPeriod.state !== "BYPASSED")
+        return { success: false, error: `Precondition failed: soak must be COMPLETED or BYPASSED. Current: ${soakPeriod.state || "NOT_STARTED"}` };
+      const capMap = safeJsonParse(profile.capability_map, []);
+      if (!Array.isArray(capMap) || capMap.length === 0)
+        return { success: false, error: "Precondition failed: capability_map is empty" };
+      const existing = await findActiveJourneyInline(base44, profile_id);
+      if (existing)
+        return { success: true, data: { journey_id: existing.id, partnership_state: existing.partnership_state, already_exists: true } };
+      const pathways = safeJsonParse(profile.recommended_pathways, []);
+      const direction = Array.isArray(pathways) && pathways.length > 0 ? (pathways[0].pathway_name || pathways[0].name || "") : "";
+      const today = new Date().toISOString().split("T")[0];
+      const journey = await base44.asServiceRole.entities.TransitionJourney.create({
+        user_profile_id: profile_id, partnership_state: "ACTIVE",
+        transition_status: JSON.stringify({ employment: "", training: "", applications: [], interviews: [] }),
+        current_direction: direction, active_commitments: JSON.stringify([]),
+        current_blockers: JSON.stringify([]), confidence_band: "BUILDING", confidence_trend: "STABLE",
+        wellbeing_awareness: JSON.stringify({ awareness: "NONE" }), significant_milestones: JSON.stringify([]),
+        referral_history: JSON.stringify([]), operational_readiness: "ON_COURSE",
+        last_interaction_date: today, journey_started_date: today,
+        journey_concluded_date: "", conclusion_summary: ""
+      });
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, { tos_phase: "IN_TRANSITION" });
+      return { success: true, data: { journey_id: journey.id, partnership_state: "ACTIVE", direction, tos_phase: "IN_TRANSITION" } };
+    }
+
+    if (action === "record_milestone") {
+      const journey = await findActiveJourneyInline(base44, profile_id);
+      if (!journey) return { success: false, error: "No active journey found" };
+      const milestones = Array.isArray(journey.significant_milestones) ? [...journey.significant_milestones] : [];
+      milestones.push({ text: params.milestone_text, date: new Date().toISOString().split("T")[0] });
+      await base44.asServiceRole.entities.TransitionJourney.update(journey.id, serializeForPersistence({
+        significant_milestones: milestones, last_interaction_date: new Date().toISOString().split("T")[0]
+      }));
+      return { success: true, data: { milestone: params.milestone_text, total_milestones: milestones.length } };
+    }
+
+    if (action === "record_blocker") {
+      const journey = await findActiveJourneyInline(base44, profile_id);
+      if (!journey) return { success: false, error: "No active journey found" };
+      const blockers = Array.isArray(journey.current_blockers) ? [...journey.current_blockers] : [];
+      if (!blockers.includes(params.blocker)) blockers.push(params.blocker);
+      await base44.asServiceRole.entities.TransitionJourney.update(journey.id, serializeForPersistence({
+        current_blockers: blockers, last_interaction_date: new Date().toISOString().split("T")[0]
+      }));
+      return { success: true, data: { blocker: params.blocker, current_blockers: blockers } };
+    }
+
+    if (action === "resolve_blocker") {
+      const journey = await findActiveJourneyInline(base44, profile_id);
+      if (!journey) return { success: false, error: "No active journey found" };
+      const blockers = Array.isArray(journey.current_blockers) ? [...journey.current_blockers] : [];
+      const updatedBlockers = blockers.filter((b: string) => b !== params.blocker);
+      await base44.asServiceRole.entities.TransitionJourney.update(journey.id, serializeForPersistence({
+        current_blockers: updatedBlockers, last_interaction_date: new Date().toISOString().split("T")[0]
+      }));
+      return { success: true, data: { resolved_blocker: params.blocker, remaining_blockers: updatedBlockers } };
+    }
+
+    if (action === "update_direction") {
+      const journey = await findActiveJourneyInline(base44, profile_id);
+      if (!journey) return { success: false, error: "No active journey found" };
+      await base44.asServiceRole.entities.TransitionJourney.update(journey.id, {
+        current_direction: params.new_direction, last_interaction_date: new Date().toISOString().split("T")[0]
+      });
+      return { success: true, data: { previous_direction: journey.current_direction, new_direction: params.new_direction } };
+    }
+
+    if (action === "conclude_journey") {
+      const journey = await findActiveJourneyInline(base44, profile_id);
+      if (!journey) return { success: false, error: "No active journey found" };
+      const currentState = journey.partnership_state;
+      const allowed = TP_VALID_TRANSITIONS[currentState];
+      if (!allowed || !allowed.includes("INDEPENDENT"))
+        return { success: false, error: `Cannot conclude from state ${currentState}` };
+      const today = new Date().toISOString().split("T")[0];
+      await base44.asServiceRole.entities.TransitionJourney.update(journey.id, {
+        partnership_state: "INDEPENDENT", journey_concluded_date: today,
+        conclusion_summary: params.summary || "The individual has demonstrated sustained confidence, stability and self-direction. The partnership has succeeded.",
+        last_interaction_date: today
+      });
+      await base44.asServiceRole.entities.UserProfile.update(profile_id, { tos_phase: "SETTLED" });
+      return { success: true, data: { partnership_state: "INDEPENDENT", tos_phase: "SETTLED", concluded_date: today } };
+    }
+
+    return { success: false, error: `Unknown TP action: ${action}` };
+  } catch (err: any) {
+    return { success: false, error: `${action} failed: ${err?.message || "Unknown error"}` };
+  }
+}
+
+// D1: EVALUATING lifecycle intent classifier
+async function classifyEvaluatingIntent(
+  base44: any, userMessage: string, recentContext: any, soakState: string, pathwayCount: number
+): Promise<{ intent: string; rejected_direction: string }> {
+  try {
+    const recentStr = (recentContext && Array.isArray(recentContext) && recentContext.length > 0)
+      ? recentContext.slice(-3).map((m: any) => `${m.role === "user" ? "User" : "Smudge"}: ${m.text}`).join("\n")
+      : "No recent context.";
+
+    const prompt = `You are a lifecycle intent classifier for a military service leaver companion service called MATE.
+
+The user is in the EVALUATING phase — they have completed capability identification and are exploring civilian pathways and reflecting on next steps.
+
+Current state:
+- Soak period: ${soakState}
+- Pathways evaluated: ${pathwayCount}
+
+Classify the user's message into ONE of these intents:
+- "reflecting": User is discussing, exploring, thinking, asking questions. No action needed.
+- "expressing_factor": User expresses a decision factor — what matters to them (e.g. family, location, money, purpose, lifestyle, health).
+- "ready_to_soak": User wants time to think, asks for space, says they need to reflect before deciding.
+- "returning_from_soak": User has been away and is now back with thoughts or reflection. Only valid if soak_state is SOAKING.
+- "skipping_soak": User explicitly chooses to skip reflection and move forward. Only valid if soak_state is NOT_STARTED or SOAKING.
+- "ready_to_act": User feels ready to move forward to practical action.
+- "declining": User declines to advance, resists progression, or changes the subject.
+- "rejecting_direction": User explicitly rejects, dismisses, or tells Smudge to stop discussing a specific career direction or work area. This includes rejections of pathways AND rejections of directions inferred from capabilities (e.g., "I don't want to do engineering" when engineering was suggested based on welding capability). When this intent is detected, also return "rejected_direction": a short lowercase label for the direction being rejected (e.g., "logistics", "engineering", "supply chain", "welding"). Extract this from the user's words, not from internal pathway names.
+- "orientation": User asks what this is, what you can do, how it works.
+
+IMPORTANT: When ambiguous, default to "reflecting". Do not over-classify. A user saying "I'm thinking about it" is "reflecting", not "ready_to_soak". "I want to move forward" is "ready_to_act" only if soak is completed or bypassed.
+
+User message: "${userMessage}"
+Recent conversation:
+${recentStr}`;
+
+    const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt,
+      response_json_schema: {
+        type: "object",
+        properties: {
+          intent: { type: "string", enum: ["reflecting", "expressing_factor", "ready_to_soak", "returning_from_soak", "skipping_soak", "ready_to_act", "declining", "rejecting_direction", "orientation"] },
+          rejected_direction: { type: "string", description: "Short lowercase label for the rejected direction, if intent is rejecting_direction. Empty string or omitted otherwise." }
+        },
+        required: ["intent"]
+      }
+    });
+    return { intent: result?.intent || "reflecting", rejected_direction: result?.rejected_direction || "" };
+  } catch {
+    return { intent: "reflecting", rejected_direction: "" };
+  }
+}
+
+async function classifyTransitionIntent(
+  base44: any, userMessage: string, recentContext: any[], currentPhase: string, journeyActive: boolean
+): Promise<string> {
+  try {
+    const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
+      prompt: `You are classifying a user message during a military-to-civilian transition support conversation.
+
+The user is in the ${currentPhase} phase — ${journeyActive ? "they are in an active transition journey, taking practical steps." : "they are ready to start their transition journey but have not begun yet."}
+
+Classify the user message into exactly one:
+
+For READY_TO_ACT (journey not yet started):
+- "starting": User wants to begin taking practical steps, start the journey, get going.
+- "reflecting": User is not ready to start yet, wants to think more, or is just chatting.
+- "orientation": User asks what this is, what you can do, how it works.
+
+For IN_TRANSITION (journey active):
+- "milestone": User reports progress, achievement, something completed, good news.
+- "blocker": User reports a setback, obstacle, challenge, something in the way.
+- "resolve_blocker": User reports a previous obstacle has been overcome or resolved.
+- "change_direction": User is changing their direction, pathway, or goal.
+- "concluding": User expresses they no longer need help, they have got this, they are independent, ready to finish.
+- "orientation": User asks what this is or what you can do.
+- "conversing": General conversation, none of the above. Default for ambiguous.
+
+For SETTLED (journey concluded, user independent):
+- "re_entry": User's circumstances have changed, they need to re-engage with MATE, they want to come back, things have changed.
+- "conversing": General conversation, catching up, sharing updates. Default.
+
+IMPORTANT: When ambiguous, default to "conversing". Do not over-classify.
+
+User message: "${userMessage}"
+
+Return JSON: { "intent": "<one of the above>" }`,
+      response_json_schema: {
+        type: "object",
+        properties: { intent: { type: "string" } },
+        required: ["intent"]
+      }
+    });
+    return result?.intent || "conversing";
+  } catch {
+    return "conversing";
+  }
+}
+
+// D1: Build EVALUATING engine context for prompt
+function buildEvaluatingEngineContext(
+  pathways: any[], soakState: string, expressedFactors: string[], engineAction: string, stateChanged: boolean, rejectedDirections: any[]
+): string {
+  const parts: string[] = [];
+
+  // B01: Filter out rejected directions from pathways
+  const rejectedDirs = Array.isArray(rejectedDirections) ? rejectedDirections : [];
+  const filteredPathways = pathways.filter((p: any) => {
+    const name = (p.pathway_name || p.name || "").toLowerCase();
+    return !rejectedDirs.some((r: any) =>
+      tokenOverlap(name, r.direction) >= 0.4 || name.includes(r.direction) || r.direction.includes(name)
+    );
+  });
+
+  if (filteredPathways && filteredPathways.length > 0) {
+    parts.push("CIVILIAN PATHWAYS THAT MATCH THIS PERSON'S CAPABILITIES:");
+    for (const p of filteredPathways.slice(0, 4)) {
+      parts.push(`- ${p.pathway_name} (${p.confidence_level})`);
+      if (p.capability_explanation) parts.push(`  Why: ${p.capability_explanation}`);
+      if (p.matching_capabilities && p.matching_capabilities.length > 0) parts.push(`  Matching capabilities: ${p.matching_capabilities.join(", ")}`);
+      if (p.decision_factor_alignment) parts.push(`  Personal fit: ${p.decision_factor_alignment}`);
+      if (p.unresolved_gaps && p.unresolved_gaps.length > 0) parts.push(`  Gaps to consider: ${p.unresolved_gaps.join("; ")}`);
+    }
+    parts.push("");
+    parts.push("Present these as observations, not directives. Do NOT say 'you should' or 'I recommend'. Say 'this looks like it could fit' or 'this aligns with what you've told me'.");
+  }
+
+  if (soakState === "SOAKING") {
+    parts.push("REFLECTION PERIOD: The user is currently in a reflection period (soak). They took time to think. Ask how their thinking went. Do not push them to act.");
+  } else if (soakState === "NOT_STARTED" && pathways.length > 0) {
+    parts.push("REFLECTION PERIOD: Not yet started. If the user seems uncertain, you can mention there's no rush — they can take time to think about what they've explored. But do not force it.");
+  } else if (soakState === "COMPLETED") {
+    parts.push("REFLECTION PERIOD: Completed. The user has reflected and is ready to move forward when they choose.");
+  } else if (soakState === "BYPASSED") {
+    parts.push("REFLECTION PERIOD: Skipped. The user chose to move forward without reflection. That's their choice.");
+  }
+
+  if (expressedFactors && expressedFactors.length > 0) {
+    parts.push(`WHAT MATTERS TO THIS PERSON: ${expressedFactors.join(", ")}`);
+  }
+
+  if (engineAction === "evaluate_pathways") {
+    parts.push("NOTE: Pathways have just been evaluated. Present them naturally in this response.");
+  }
+
+  if (engineAction === "initiate_soak") {
+    parts.push("NOTE: The user has been offered a reflection period. Acknowledge this warmly — they're taking time to think.");
+  }
+
+  if (stateChanged) {
+    parts.push("NOTE: The lifecycle state has changed. The user is now READY_TO_ACT. Acknowledge their decision and let them know they can take practical steps when ready.");
+  }
+
+  return parts.length > 0 ? parts.join("\n") : "";
+}
+
+function buildTransitionEngineContext(
+  journeyStatus: any, d2_engine_action: string, d2_state_changed: boolean, currentPhase: string
+): string {
+  if (!journeyStatus || !journeyStatus.active) {
+    if (currentPhase === "READY_TO_ACT") {
+      return "The user is ready to begin their transition journey but has not started yet. If they want to start, acknowledge it positively. If they want to talk first, that is fine too.";
+    }
+    return "";
+  }
+
+  const parts: string[] = [];
+  parts.push(`Active journey: ${journeyStatus.partnership_state}`);
+  if (journeyStatus.current_direction) parts.push(`Current direction: ${journeyStatus.current_direction}`);
+  if (journeyStatus.significant_milestones?.length > 0)
+    parts.push(`Milestones recorded: ${journeyStatus.significant_milestones.length}`);
+  if (journeyStatus.current_blockers?.length > 0)
+    parts.push(`Current blockers: ${journeyStatus.current_blockers.join("; ")}`);
+
+  if (d2_state_changed) {
+    if (d2_engine_action === "start_journey")
+      parts.push("NOTE: The transition journey has just started. The user is now IN_TRANSITION. Acknowledge this positively.");
+    else if (d2_engine_action === "conclude_journey")
+      parts.push("NOTE: The journey has concluded. The user is now SETTLED. Acknowledge their independence. The goal was independence, not dependence.");
+  }
+
+  if (d2_engine_action === "record_milestone")
+    parts.push("NOTE: A milestone has been recorded. Acknowledge the progress.");
+  else if (d2_engine_action === "record_blocker")
+    parts.push("NOTE: A blocker has been recorded. Acknowledge it as positional, not permanent.");
+  else if (d2_engine_action === "resolve_blocker")
+    parts.push("NOTE: A blocker has been resolved. The path forward is clearer.");
+  else if (d2_engine_action === "update_direction")
+    parts.push("NOTE: Direction has changed. Changing direction is evidence of learning, not failure.");
+
+  return parts.length > 0 ? parts.join("\n") : "";
+}
+
 async function handlePostConfirmingState(
   base44: any,
   profile: any,
@@ -932,7 +2024,9 @@ async function handlePostConfirmingState(
   recentContext: any,
   convState: any,
   convStateId: string | null,
-  cors: Record<string, string>
+  cors: Record<string, string>,
+  origin: string,
+  authHeader: string | null
 ): Promise<Response> {
   // 1. Lightweight safety classification
   let safetyClass = "none";
@@ -1008,6 +2102,260 @@ Profile context: ${buildProfileContext(profile)}`;
     }), { headers: cors });
   }
 
+  // 1b. CAPABILITY HANDOVER CHECK (CONFIRMED only — Packet 3)
+  // Authority already established by progression to CONFIRMED.
+  // This checks conversational context only — NOT a permission gate.
+  // Default = proceed. Explicit deferral = remain conversational.
+  if (currentPhase === "CONFIRMED") {
+    const deferralClass = await classifyDeferral(base44, userMessage, recentContext);
+    if (deferralClass === "proceed") {
+      return await handleCapabilityHandover(
+        base44, profile, profile_id, userMessage, recentContext,
+        convState, convStateId, cors
+      );
+    }
+    // "defer": fall through to normal conversation
+  }
+
+  // ==================================================
+  // D1: EVALUATING ENGINE INTEGRATION
+  // Calls engineDecisionReadiness for pathway evaluation, soak management.
+  // Engine owns EVALUATING -> READY_TO_ACT transition (via complete_soak / bypass_soak).
+  // ==================================================
+  let d1_engine_context = "";
+  let d1_state_changed = false;
+  let d1_new_phase = currentPhase;
+  let d1_engine_action = "none";
+  let d1_engine_error: string | null = null;
+
+  if (currentPhase === "EVALUATING") {
+    // 1. Call get_status to read current engine state
+    const statusResult = await inlineEngineAction(base44, profile, profile_id, "get_status");
+
+    if (statusResult.success) {
+      const status = statusResult.data;
+      const soakState = status.soak_state || "NOT_STARTED";
+      const pathwayCount = status.pathway_count || 0;
+      const expressedFactors = status.expressed_decision_factors || [];
+
+      // 2. First EVALUATING turn: evaluate pathways if not yet done
+      let currentPathways: any[] = [];
+      if (pathwayCount === 0 && soakState === "NOT_STARTED") {
+        const evalResult = await inlineEngineAction(base44, profile, profile_id, "evaluate_pathways");
+        if (evalResult.success) {
+          d1_engine_action = "evaluate_pathways";
+          try {
+            const updatedProfile = await base44.asServiceRole.entities.UserProfile.get(profile_id);
+            const rp = updatedProfile.recommended_pathways;
+            currentPathways = typeof rp === "string" ? JSON.parse(rp) : (Array.isArray(rp) ? rp : []);
+          } catch { currentPathways = []; }
+        } else {
+          d1_engine_error = evalResult.error;
+        }
+      } else if (pathwayCount > 0) {
+        currentPathways = Array.isArray(profile.recommended_pathways) ? profile.recommended_pathways : [];
+      }
+
+      // 3. Classify lifecycle intent
+      const evalIntentResult = await classifyEvaluatingIntent(base44, userMessage, recentContext, soakState, pathwayCount);
+      const intent = evalIntentResult.intent;
+      // B01: Persist rejected direction as evidence_log entry (area: "rejected_direction")
+      if (intent === "rejecting_direction" && evalIntentResult.rejected_direction) {
+        try {
+          const dirLabel = evalIntentResult.rejected_direction.toLowerCase().trim();
+          const existingRejected = extractRejectedDirections(profile);
+          if (!existingRejected.some((r: any) => r.direction === dirLabel)) {
+            const newEntry = {
+              evidence_id: crypto.randomUUID(),
+              area: "rejected_direction",
+              content: dirLabel,
+              source_type: "conversation",
+              source_reference: "Explicit rejection during evaluation",
+              source_text: userMessage.slice(0, 300),
+              recorded_date: new Date().toISOString()
+            };
+            const updatedEvidenceLog = [...(Array.isArray(profile.evidence_log) ? profile.evidence_log : []), newEntry];
+            await base44.asServiceRole.entities.UserProfile.update(profile_id, {
+              evidence_log: JSON.stringify(updatedEvidenceLog)
+            });
+            profile.evidence_log = updatedEvidenceLog;
+          }
+        } catch { /* B01 persistence failure — non-fatal, rejection still handled conversationally */ }
+      }
+
+      // 4. Handle engine actions based on intent
+      if (intent === "ready_to_soak" && soakState === "NOT_STARTED") {
+        const soakResult = await inlineEngineAction(base44, profile, profile_id, "initiate_soak");
+        if (soakResult.success) {
+          d1_engine_action = "initiate_soak";
+        } else {
+          d1_engine_error = soakResult.error;
+        }
+      } else if (intent === "returning_from_soak" && soakState === "SOAKING") {
+        const soakResult = await inlineEngineAction(base44, profile, profile_id, "complete_soak", { reflection_notes: userMessage.slice(0, 500) });
+        if (soakResult.success) {
+          d1_state_changed = true;
+          d1_new_phase = "READY_TO_ACT";
+          d1_engine_action = "complete_soak";
+        } else {
+          d1_engine_error = soakResult.error;
+        }
+      } else if (intent === "skipping_soak" && (soakState === "NOT_STARTED" || soakState === "SOAKING")) {
+        const bypassReason = userMessage.length >= 10 ? userMessage : "User chose to skip reflection period and move forward";
+        const soakResult = await inlineEngineAction(base44, profile, profile_id, "bypass_soak", { soak_bypass_reason: bypassReason.slice(0, 200) });
+        if (soakResult.success) {
+          d1_state_changed = true;
+          d1_new_phase = "READY_TO_ACT";
+          d1_engine_action = "bypass_soak";
+        } else {
+          d1_engine_error = soakResult.error;
+        }
+      }
+      // expressing_factor: Known safe limitation — orchestrator cannot provide evidence_ref.
+      // Decision factors recorded during assessment/capability handover. Orchestrator references conversationally.
+      // orientation: D3 scope — handled as reflecting for D1.
+
+      // 5. Build engine context for prompt
+      d1_engine_context = buildEvaluatingEngineContext(
+        currentPathways, soakState, expressedFactors, d1_engine_action, d1_state_changed, extractRejectedDirections(profile)
+      );
+
+      // 6. Update profile if state changed
+      if (d1_state_changed) {
+        try {
+          const updatedProfile = await base44.asServiceRole.entities.UserProfile.get(profile_id);
+          profile = deserializeProfile(updatedProfile);
+        } catch { /* graceful degradation */ }
+      }
+    } else {
+      d1_engine_error = statusResult.error;
+      // Engine unavailable — graceful degradation. Continue conversationally.
+    }
+  }
+
+
+  // ==================================================
+  // D2: TRANSITION PARTNERSHIP ENGINE INTEGRATION
+  // Handles READY_TO_ACT → IN_TRANSITION → SETTLED lifecycle.
+  // Mirrors engineTransitionPartnership inline (same platform constraint as D1).
+  // ==================================================
+  let d2_engine_context = "";
+  let d2_state_changed = false;
+  let d2_new_phase = currentPhase;
+  let d2_engine_action = "none";
+  let d2_engine_error: string | null = null;
+
+  if (currentPhase === "READY_TO_ACT" || currentPhase === "IN_TRANSITION") {
+    // 1. Get current journey status
+    const journeyResult = await inlineTPAction(base44, profile, profile_id, "get_journey_status");
+    const journeyStatus = journeyResult.success ? journeyResult.data : null;
+    const journeyActive = journeyStatus?.active === true;
+
+    if (currentPhase === "READY_TO_ACT" && !journeyActive) {
+      // 2a. READY_TO_ACT: classify intent — does user want to start?
+      const intent = await classifyTransitionIntent(base44, userMessage, recentContext, currentPhase, false);
+      if (intent === "starting") {
+        const startResult = await inlineTPAction(base44, profile, profile_id, "start_journey");
+        if (startResult.success) {
+          d2_engine_action = "start_journey";
+          d2_state_changed = true;
+          d2_new_phase = "IN_TRANSITION";
+        } else {
+          d2_engine_error = startResult.error;
+        }
+      }
+    } else if (currentPhase === "IN_TRANSITION" && journeyActive) {
+      // 2b. IN_TRANSITION: classify intent and dispatch action
+      const intent = await classifyTransitionIntent(base44, userMessage, recentContext, currentPhase, true);
+
+      if (intent === "milestone") {
+        const milestoneText = userMessage.slice(0, 300);
+        const result = await inlineTPAction(base44, profile, profile_id, "record_milestone", { milestone_text: milestoneText });
+        if (result.success) d2_engine_action = "record_milestone";
+        else d2_engine_error = result.error;
+      } else if (intent === "blocker") {
+        const blockerText = userMessage.slice(0, 200);
+        const result = await inlineTPAction(base44, profile, profile_id, "record_blocker", { blocker: blockerText });
+        if (result.success) d2_engine_action = "record_blocker";
+        else d2_engine_error = result.error;
+      } else if (intent === "resolve_blocker") {
+        const blockerText = userMessage.slice(0, 200);
+        const result = await inlineTPAction(base44, profile, profile_id, "resolve_blocker", { blocker: blockerText });
+        if (result.success) d2_engine_action = "resolve_blocker";
+        else d2_engine_error = result.error;
+      } else if (intent === "change_direction") {
+        const newDirection = userMessage.slice(0, 200);
+        const result = await inlineTPAction(base44, profile, profile_id, "update_direction", { new_direction: newDirection });
+        if (result.success) d2_engine_action = "update_direction";
+        else d2_engine_error = result.error;
+      } else if (intent === "concluding") {
+        const summary = userMessage.slice(0, 500);
+        const result = await inlineTPAction(base44, profile, profile_id, "conclude_journey", { summary });
+        if (result.success) {
+          d2_engine_action = "conclude_journey";
+          d2_state_changed = true;
+          d2_new_phase = "SETTLED";
+        } else {
+          d2_engine_error = result.error;
+        }
+      }
+      // "conversing" and "orientation": no engine action, continue conversationally
+    }
+
+    // 3. Build engine context
+    const refreshedStatus = d2_state_changed
+      ? await inlineTPAction(base44, profile, profile_id, "get_journey_status")
+      : { success: true, data: journeyStatus };
+    d2_engine_context = buildTransitionEngineContext(
+      refreshedStatus.success ? refreshedStatus.data : journeyStatus,
+      d2_engine_action, d2_state_changed,
+      d2_state_changed ? d2_new_phase : currentPhase
+    );
+
+    // 4. Refresh profile if state changed
+    if (d2_state_changed) {
+      try {
+        const updatedProfile = await base44.asServiceRole.entities.UserProfile.get(profile_id);
+        profile = deserializeProfile(updatedProfile);
+      } catch { /* graceful degradation */ }
+    }
+  }
+
+  // ==================================================
+  // D3: SETTLED RE-ENTRY
+  // Handles SETTLED → EVALUATING on explicit user re-entry authority.
+  // Preserves concluded TransitionJourney, capability_map, POP evidence.
+  // Does NOT reset soak_period (existing EVALUATING flow can safely operate with COMPLETED soak).
+  // ==================================================
+  let d3_engine_context = "";
+  let d3_state_changed = false;
+  let d3_new_phase = currentPhase;
+  let d3_engine_action = "none";
+  let d3_engine_error: string | null = null;
+
+  if (currentPhase === "SETTLED") {
+    const reEntryIntent = await classifyTransitionIntent(base44, userMessage, recentContext, currentPhase, false);
+
+    if (reEntryIntent === "re_entry") {
+      try {
+        await base44.asServiceRole.entities.UserProfile.update(profile_id, { tos_phase: "EVALUATING" });
+        d3_engine_action = "re_entry";
+        d3_state_changed = true;
+        d3_new_phase = "EVALUATING";
+        d3_engine_context = "The user has re-entered MATE after their journey was concluded. Their circumstances have changed. Previous capabilities and pathways were identified before — present them as 'what we identified before' not 'what you are good at now'. The user needs to re-explore. Acknowledge their return warmly.";
+
+        // Refresh profile after transition
+        try {
+          const updatedProfile = await base44.asServiceRole.entities.UserProfile.get(profile_id);
+          profile = deserializeProfile(updatedProfile);
+        } catch { /* graceful degradation */ }
+      } catch (err: any) {
+        d3_engine_error = `Re-entry failed: ${err?.message || "Unknown error"}`;
+      }
+    }
+    // "conversing": no engine action, continue conversationally (D3-T1 already satisfied by D2)
+  }
+
   // 2. Build state-aware prompt and generate response
   let responseText = "";
   let responseIntent = "ACKNOWLEDGE";
@@ -1015,7 +2363,8 @@ Profile context: ${buildProfileContext(profile)}`;
   let generationFallback = false;
 
   try {
-    const prompt = buildStateAwarePrompt(profile, currentPhase, userMessage, recentContext);
+    const engineContext = [d1_engine_context, d2_engine_context, d3_engine_context].filter(Boolean).join("\n\n");
+    const prompt = buildStateAwarePrompt(profile, currentPhase, userMessage, recentContext, engineContext);
     const generation = await base44.asServiceRole.integrations.Core.InvokeLLM({
       prompt,
       response_json_schema: postConfirmingSchema
@@ -1027,6 +2376,11 @@ Profile context: ${buildProfileContext(profile)}`;
       responseText = generation.response_text.trim();
       responseIntent = ["ACKNOWLEDGE", "EXPLORE", "CLARIFY"].includes(generation.response_intent) ? generation.response_intent : "ACKNOWLEDGE";
       asksQuestion = generation.asks_question === true;
+      // B02: Post-generation [Insert] detection — fail closed, no regeneration
+      if (/\[Insert\s/i.test(responseText)) {
+        responseText = "I don't have the ability to look up external services or support. If you need help finding something specific, I'd suggest speaking to your transition partner or looking into it directly.";
+        generationFallback = true;
+      }
     } else {
       generationFallback = true;
     }
@@ -1094,17 +2448,23 @@ Profile context: ${buildProfileContext(profile)}`;
     response_text: responseText,
     response_intent: responseIntent,
     asks_question: asksQuestion,
-    tos_phase: currentPhase,
-    state_changed: false,
+    tos_phase: (d1_state_changed || d2_state_changed || d3_state_changed) ? (d3_state_changed ? d3_new_phase : (d2_state_changed ? d2_new_phase : d1_new_phase)) : currentPhase,
+    state_changed: d1_state_changed || d2_state_changed || d3_state_changed,
     candidate_discoveries_count: 0,
     accepted_discoveries_count: 0,
     companion_result: null,
-    recoverable_error: null,
-    orchestration_note: "POST_CONFIRMING_CONVERSATIONAL",
+    recoverable_error: d3_engine_error || d2_engine_error || d1_engine_error,
+    orchestration_note: d3_engine_action !== "none" ? `D3_ENGINE_${d3_engine_action.toUpperCase()}` : (d2_engine_action !== "none" ? `D2_ENGINE_${d2_engine_action.toUpperCase()}` : (d1_engine_action !== "none" ? `D1_ENGINE_${d1_engine_action.toUpperCase()}` : "POST_CONFIRMING_CONVERSATIONAL")),
     companion_core_version: COMPANION_CORE_VERSION,
     _internal: {
-      phase: currentPhase,
+      phase: (d1_state_changed || d2_state_changed || d3_state_changed) ? (d3_state_changed ? d3_new_phase : (d2_state_changed ? d2_new_phase : d1_new_phase)) : currentPhase,
       safety_check: safetyClass,
+      d1_engine_action: d1_engine_action,
+      d1_engine_error: d1_engine_error,
+      d2_engine_action: d2_engine_action,
+      d2_engine_error: d2_engine_error,
+      d3_engine_action: d3_engine_action,
+      d3_engine_error: d3_engine_error,
       generation: {
         intent: responseIntent,
         asks_question: asksQuestion,
@@ -1131,6 +2491,7 @@ Deno.serve(async (req) => {
     const user_message = body.user_message || "";
     const recent_context = body.recent_context || null;  // R1: Frontend passes 3-4 recent exchanges
     const base44 = createClientFromRequest(req);
+    const origin = new URL(req.url).origin;
 
     // ==================================================
     // 1. PROFILE CONTEXT ACQUISITION
@@ -1287,17 +2648,96 @@ Deno.serve(async (req) => {
     }
 
     // ==================================================
+    // 1c. SMUDGE CAPABILITY AWARENESS (D3 — cross-lifecycle)
+    // Orientation check runs BEFORE state routing.
+    // Lifecycle-neutral: no engine call, no state change.
+    // Canonical statement is grounding for generation, not verbatim response.
+    // If generation fails, canonical statement is returned directly.
+    // ==================================================
+    if (isOrientationQuestion(user_message)) {
+      try {
+        const orientationResult = await base44.asServiceRole.integrations.Core.InvokeLLM({
+          prompt: `You are Smudge, a companion for people leaving the military. The user has asked what you can do or what this is.
+
+Here is your canonical capability statement — this is the AUTHORITATIVE BOUNDARY on what you may claim. Express it naturally in your own voice. Do NOT add capabilities, functionality or claims outside this boundary. Keep it conversational, warm, and honest.
+
+CANONICAL CAPABILITY STATEMENT:
+${SMUDGE_CAPABILITY_STATEMENT}
+
+The user is currently in the ${currentPhase} phase. Do not reference lifecycle phases or internal states. Express the statement naturally in 2-4 sentences. Be warm and genuine.
+
+User message: "${user_message}"
+
+Return JSON: { "response_text": "<your natural expression>", "response_intent": "EXPLAIN", "asks_question": true }`,
+          response_json_schema: {
+            type: "object",
+            properties: {
+              response_text: { type: "string" },
+              response_intent: { type: "string" },
+              asks_question: { type: "boolean" }
+            },
+            required: ["response_text", "response_intent", "asks_question"]
+          }
+        });
+
+        let orientText = orientationResult?.response_text || SMUDGE_CAPABILITY_STATEMENT;
+        const orientValidation = validateGeneration(orientText, true);
+        if (!orientValidation.valid && orientValidation.violation === "identity") {
+          orientText = "I'm not a veteran. I'm a companion who helps people leaving the military see themselves more clearly. I can listen to your story, show you civilian pathways that match what you're good at, and walk with you while you figure out your next steps. What would you like to explore?";
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          response_text: orientText,
+          response_intent: "EXPLAIN",
+          asks_question: orientationResult?.asks_question !== false,
+          tos_phase: currentPhase, state_changed: false,
+          candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+          companion_result: null, recoverable_error: null,
+          orchestration_note: "D3_CAPABILITY_AWARENESS",
+          companion_core_version: COMPANION_CORE_VERSION,
+          _internal: {
+            phase: currentPhase,
+            orientation: true,
+            generation_fallback: !orientationResult?.response_text,
+            lifecycle_neutral: true
+          }
+        }), { headers: cors });
+      } catch {
+        // Deterministic fallback: return canonical statement directly
+        return new Response(JSON.stringify({
+          success: true,
+          response_text: SMUDGE_CAPABILITY_STATEMENT,
+          response_intent: "EXPLAIN",
+          asks_question: true,
+          tos_phase: currentPhase, state_changed: false,
+          candidate_discoveries_count: 0, accepted_discoveries_count: 0,
+          companion_result: null, recoverable_error: null,
+          orchestration_note: "D3_CAPABILITY_AWARENESS_FALLBACK",
+          companion_core_version: COMPANION_CORE_VERSION,
+          _internal: {
+            phase: currentPhase,
+            orientation: true,
+            generation_fallback: true,
+            lifecycle_neutral: true
+          }
+        }), { headers: cors });
+      }
+    }
+
+    // ==================================================
     // 2. PHASE ROUTING — EXPLORING + CONFIRMING / POST-CONFIRMING
     // R1-C.1F PACKET 1: CONVERSATIONAL LIFELINE
     // No lifecycle state may disable the companion relationship.
     // Post-CONFIRMING states get state-aware conversational handling.
-    // No engine invocation. No lifecycle transitions. Conversation only.
+    // D1: EVALUATING now invokes engineDecisionReadiness. Other post-CONFIRMING states remain conversational.
     // ==================================================
 
     if (currentPhase !== "EXPLORING" && currentPhase !== "CONFIRMING") {
+      const authHeader = req.headers.get("authorization");
       return await handlePostConfirmingState(
         base44, profile, profile_id, currentPhase,
-        user_message, recent_context, convState, convStateId, cors
+        user_message, recent_context, convState, convStateId, cors, origin, authHeader
       );
     }
 
@@ -1342,7 +2782,9 @@ Deno.serve(async (req) => {
       "- Professional identity: " + (profile.professional_identity || "not yet shared") + "\n" +
       "- Service branch: " + (profile.service_branch || "not yet shared") + "\n" +
       recentContextStr + "\n" +
+      "\nSmudge's last conversational act: " + (convState?.last_smudge_intent || "none (first message or session reset)") + "\n" +
       'The user just said: "' + user_message + '"\n\n' +
+      "CLASSIFY THE USER'S RESPONSE TYPE based on what Smudge just asked or did. The user's affirmation only has the authority of the question it answers. See the user_response_type schema description for binding rules.\n\n" +
       "Extract candidate discoveries from this message. Rules:\n" +
       "1. Only extract what the user DIRECTLY expressed or STRONGLY implied\n" +
       "2. Do NOT invent or fabricate information\n" +
@@ -1351,7 +2793,7 @@ Deno.serve(async (req) => {
       "   - reasonable_interpretation: strong inference from what was said\n" +
       "   - uncertain: weak inference or guess\n" +
       "4. Include the user's actual words as source_text for each discovery\n" +
-      "5. Map each discovery to a UserProfile field (e.g., professional_identity, service_branch, service_history, personal_context, goals, operational_context, user_confidence)\n\n" +
+      "5. Map each discovery to a UserProfile field (e.g., professional_identity, service_branch, rank, service_history, personal_context, goals, operational_context, user_confidence)\n\n" +
       "R1-C.1E EXTRACTION DOCTRINE:\n" +
       "6. DECOMPOSITION: If the user's statement contains multiple pieces of information, decompose it into separate candidate discoveries. Each atomic fact gets its own entry with its own source_text (the user's actual words for that specific fact). Do not combine unrelated facts into a single discovery.\n" +
       "7. STRUCTURED VALUES: For service_history and operational_context, use structured_value (an object) instead of value (a string). Only include properties the user actually mentioned. Omit unmentioned properties entirely (do not include them as empty strings or null). Do not infer or enrich.\n" +
@@ -1373,8 +2815,14 @@ Deno.serve(async (req) => {
       "   - full_name: The user's stated name. 'My name is Tom' → full_name: 'Tom'. 'I'm Dave' → full_name: 'Dave'.\n" +
       "   - professional_identity: The user's trade, role, or professional self-description. NOT what they lack or haven't done. 'I'm a welder' → professional_identity. 'I don't have civilian network experience' → NOT professional_identity.\n" +
       "   - service_branch: The user's stated service branch. 'I was in REME' → service_branch: 'REME'. 'I served in the Royal Engineers' → service_branch: 'Royal Engineers'. 'I was in the Army' → service_branch: 'Army'.\n" +
+      "   - rank: The user's stated military rank. 'I'm a Craftsman' → rank: 'Craftsman'. 'I was a Lance Corporal' → rank: 'Lance Corporal'. 'I'm a Sergeant' → rank: 'Sergeant'. 'I made it to Captain' → rank: 'Captain'.\n" +
       "   - years_served: The user's stated duration of service as a string number. '6 years' → years_served: '6'. '8 years in the Army' → years_served: '8'.\n" +
       "   - user_confidence: Extract as a number ONLY if the user explicitly stated a number or directly equivalent numeric expression (e.g., 'I'd say 7 out of 10', 'maybe 8'). Do NOT convert qualitative language ('pretty confident', 'not sure') into a number. If qualitative, do not extract a user_confidence value.\n\n" +
+      "10. CONTEXTUAL EXTRACTION: Interpret the user's words in the context of the conversational act they are answering.\n" +
+      "If Smudge's last act was PROGRESSION_INVITATION and the user declines (e.g., 'No, I'd like to stay here', 'Not yet', 'I'd rather wait'), the declining language itself is NOT a discovery.\n" +
+      "'Here' refers to remaining at the current lifecycle position, not a geographic or personal-context disclosure.\n" +
+      "Only extract discoveries from independently expressed new information that the user provides alongside the decline.\n" +
+      "Example: 'No, I'd like to stay here for now' - no discoveries (pure decline). 'No, I'd rather stay here - and I also just got my CSCS card' - extract the CSCS card as new evidence; do not extract 'stay here' as personal_context.\n\n" +
       "Also classify:\n" +
       "- The user's conversational intent\n" +
       "- Whether this is an explicit confirmation/rejection (only if unambiguous)\n" +
@@ -1411,7 +2859,7 @@ Deno.serve(async (req) => {
           confidence: { type: "string", enum: ["high", "moderate", "low"] }
         }, required: ["field", "source_type", "source_text", "confidence"] } },
         intent: { type: "string", enum: ["answering", "correcting", "asking_question", "seeking_reassurance", "expressing_frustration", "sharing_milestone", "asking_orientation", "other"] },
-        user_response_type: { type: "string", enum: ["answering", "correcting", "confirming", "rejecting", "none"], description: "Only confirming if explicit unambiguous affirmation" },
+        user_response_type: { type: "string", enum: ["answering", "correcting", "confirming", "rejecting", "progressing", "confirming_progressing", "declining", "none"], description: "Classify based on what Smudge just asked or did (see Smudge's last conversational act above) AND what the user explicitly expressed:\n- 'confirming': User explicitly affirms that Smudge's reflection/summary is accurate.\n- 'rejecting': User explicitly says Smudge's reflection is wrong.\n- 'progressing': User explicitly chooses to move forward to the next stage. May be in response to a Smudge progression invitation (PROGRESSION_INVITATION) OR independently and explicitly volunteered. Must be a clear, explicit statement of readiness to move on — not vague or conversational momentum.\n- 'confirming_progressing': User explicitly validates the reflection AND explicitly chooses to progress in the same utterance. Both intents must be independently identifiable — never infer one from the other.\n- 'declining': User explicitly declines a Smudge progression invitation. Only valid when Smudge's last act was PROGRESSION_INVITATION.\n- 'correcting': User corrects something Smudge said.\n- 'answering': None of the above.\n- 'none': No classification possible.\n\nKey rules: An affirmation only has the authority of the question it answers. Vague 'yeah', 'okay', 'sounds good' inherit ONLY the authority of the Smudge act they respond to. 'Let's go', 'carry on' are NOT explicit progression. 'I'm ready to move on', 'let's look at what I'm good at' ARE explicit progression. If declared last act does not match actual conversation text, classify based on actual text. Never infer progression from momentum." },
         interpretation_confidence: { type: "string", enum: ["high", "moderate", "low"] },
         ambiguity_flag: { type: "boolean", description: "True if interpretation is uncertain or ambiguous" },
         clarification_needed: { type: "string", description: "Question to ask user if ambiguous" },
@@ -1587,7 +3035,7 @@ Deno.serve(async (req) => {
         const { safe, down } = safeUserResponseType(R, currentPhase);
         R = safe;
         E = down;
-        if (currentPhase === "CONFIRMING" && (R === "confirming" || R === "rejecting")) {
+        if (currentPhase === "CONFIRMING" && (R === "confirming" || R === "rejecting" || R === "progressing" || R === "confirming_progressing" || R === "declining")) {
           h = { years_served: profile.years_served ?? 0 };
         } else {
           m.no_discoveries = true;
@@ -1747,7 +3195,9 @@ Deno.serve(async (req) => {
       sufficiency_orchestration: sufficiencyOrchestration,
       // R1-C.1D CONVERSATION AWARENESS [C1] [R4]
       conversation_awareness: conversationAwarenessStr,
-      recent_context_for_gen: recentContextForGen
+      recent_context_for_gen: recentContextForGen,
+      // Packet 2: progression state tracking
+      progression_declined: R === "declining"
     };
 
     try {
@@ -1760,7 +3210,12 @@ Deno.serve(async (req) => {
           typeof generation.response_text === "string" &&
           generation.response_text.trim().length > 0) {
         responseText = generation.response_text.trim();
-        responseIntent = ["ACKNOWLEDGE", "EXPLORE", "CLARIFY", "REFLECT", "CONFIRMATION_PROMPT", "TRANSITION_ACKNOWLEDGEMENT"]
+        // B02: Post-generation [Insert] detection — fail closed, no regeneration
+        if (/\[Insert\s/i.test(responseText)) {
+          responseText = "I don't have the ability to look up external services or support. If you need help finding something specific, I'd suggest speaking to your transition partner or looking into it directly.";
+          generationFallback = true;
+        }
+        responseIntent = ["ACKNOWLEDGE", "EXPLORE", "CLARIFY", "REFLECT", "CONFIRMATION_PROMPT", "PROGRESSION_INVITATION", "TRANSITION_ACKNOWLEDGEMENT"]
           .includes(generation.response_intent) ? generation.response_intent : "ACKNOWLEDGE";
         asksQuestion = generation.asks_question === true;
       } else {
@@ -1803,7 +3258,7 @@ Deno.serve(async (req) => {
             const retryValidation = validateGeneration(retry.response_text.trim(), genContext.evidence_sufficient);
             if (retryValidation.valid) {
               responseText = retry.response_text.trim();
-              responseIntent = ["ACKNOWLEDGE", "EXPLORE", "CLARIFY", "REFLECT", "CONFIRMATION_PROMPT", "TRANSITION_ACKNOWLEDGEMENT"]
+              responseIntent = ["ACKNOWLEDGE", "EXPLORE", "CLARIFY", "REFLECT", "CONFIRMATION_PROMPT", "PROGRESSION_INVITATION", "TRANSITION_ACKNOWLEDGEMENT"]
                 .includes(retry.response_intent) ? retry.response_intent : "ACKNOWLEDGE";
               asksQuestion = retry.asks_question === true;
               generationValidation = "PASSED_AFTER_RETRY";
@@ -1848,6 +3303,11 @@ Deno.serve(async (req) => {
     // Persist derived state + generation results.
     // Failure is logged but does not affect the response.
     // ==================================================
+
+    // Packet 2 Addendum Layer 1: Intent fidelity check
+    if (responseIntent === "PROGRESSION_INVITATION" && asksQuestion !== true) {
+      responseIntent = "EXPLORE";
+    }
 
     let convStatePersisted = false;
     if (convStateId) {
@@ -1902,6 +3362,16 @@ Deno.serve(async (req) => {
         ? "CLARIFICATION_PATH"
         : g && m.no_discoveries
         ? "NO_DISCOVERIES"
+        : R === "confirming"
+        ? "CONFIRMING_VALIDATED"
+        : (R === "progressing" || R === "confirming_progressing") && m.state_changed
+        ? "CONFIRMING_ADVANCED"
+        : (R === "progressing" || R === "confirming_progressing") && !m.state_changed
+        ? "CONFIRMING_NOT_VALIDATED"
+        : R === "declining"
+        ? (m.confirmed ? "CONFIRMING_DECLINED" : "CONFIRMING_ANSWERING")
+        : R === "rejecting"
+        ? "CONFIRMING_CORRECTED"
         : "R1-C.1E_GENERATED",
       companion_core_version: COMPANION_CORE_VERSION,
       _internal: {
